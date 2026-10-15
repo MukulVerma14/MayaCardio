@@ -17,8 +17,9 @@ from core.types import LossRecord, Sample
 
 app = FastAPI(title="MayaCardio Cloud Ingestion & Processing Service")
 
-DB_PATH = os.environ.get("CLOUD_DB_PATH", "cloud_store.db")
-cloud_storage = CloudStorage(db_path=DB_PATH)
+# Neon / Supabase PostgreSQL database URL or SQLite default
+DB_URL = os.environ.get("CLOUD_DATABASE_URL", "sqlite:///cloud_store.db")
+cloud_storage = CloudStorage(db_url=DB_URL)
 
 
 @app.get("/")
@@ -28,7 +29,11 @@ def root() -> Dict[str, str]:
 
 @app.post("/api/v1/heartbeat")
 def heartbeat() -> Dict[str, Any]:
-    """Lightweight connectivity probe for the bedside device."""
+    """Lightweight connectivity probe for the bedside device.
+
+    Also functions to prevent Render.com free instances from spinning down
+    due to inactivity during monitoring.
+    """
     return {
         "status": "ok",
         "server_time": time.time(),

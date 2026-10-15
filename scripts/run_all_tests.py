@@ -18,6 +18,7 @@ SCRIPTS = [
     ("Disk Full (ENOSPC) & Emergency Allowance", "test_disk_full.py"),
     ("System Clock Jump Resilience", "test_clock_jump.py"),
     ("Ground Truth Export Comparison", "test_ground_truth.py"),
+    ("Cloud Service Restart & Data Persistence", "test_cloud_restart.py"),
 ]
 
 

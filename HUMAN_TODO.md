@@ -1,35 +1,62 @@
 # Action Items for Human Candidate (HUMAN_TODO.md)
 
-This document contains everything that requires human intervention, physical hardware, accounts, or external credentials.
+This document contains everything that requires human intervention, physical hardware, external credentials, or real-world recording.
 
 ---
 
 ## 1. Cloud Deployment (100% Free Tier, No Credit Card Required)
 
-The cloud backend is built with FastAPI (`cloud/server.py`) and is production-ready for deployment on any free Python hosting platform.
+The cloud backend is built with FastAPI (`cloud/server.py`) and supports PostgreSQL (Neon / Supabase) via `CLOUD_DATABASE_URL`, or SQLite.
 
 ### Recommended Free Tier Setup:
-1. **Render.com (Free Web Service)**:
-   - Create a free account at [render.com](https://render.com).
+1. **Neon Serverless PostgreSQL (neon.tech)**:
+   - Create a free account at [neon.tech](https://neon.tech) (0.5 GB free storage, no credit card required).
+   - Copy the connection string: `postgres://user:password@ep-...neon.tech/neondb?sslmode=require`.
+2. **Render.com (Free Web Service)**:
+   - Create a free account at [render.com](https://render.com) (no credit card required).
    - Click **New** -> **Web Service** -> Connect your GitHub repo.
-   - Set Build Command: `pip install -r requirements.txt` (or `pip install .`)
+   - Set Build Command: `pip install .`
    - Set Start Command: `uvicorn cloud.server:app --host 0.0.0.0 --port $PORT`
-   - Set Environment Variable: `CLOUD_DB_PATH=/data/cloud_store.db` (or attach free database).
-2. **Neon.tech Serverless Postgres (Optional Free Tier)**:
-   - Create a free project at [neon.tech](https://neon.tech) (0.5 GB free storage, no credit card).
-   - Set `CLOUD_DATABASE_URL=postgres://...` in your Render environment variables.
-3. **Verify Deployment**:
-   - Test connectivity from your machine:
-     ```bash
-     curl https://your-cloud-app.onrender.com/api/v1/heartbeat
-     ```
-   - Set `CLOUD_URL=https://your-cloud-app.onrender.com` on your bedside Raspberry Pi.
+   - Set Environment Variable: `CLOUD_DATABASE_URL=postgres://user:password@ep-...neon.tech/neondb?sslmode=require`
+3. **Render Cold-Start & Keepalive Verification**:
+   - Render free instances spin down after 15 minutes of inactivity (cold-start takes ~50s).
+   - The bedside pipeline's `ConnectivityMonitor` sends a lightweight `/api/v1/heartbeat` every **2.0 seconds** while online.
+   - This continuous heartbeat keeps the free Render instance warm, preventing spin-down during active patient monitoring.
+4. **Configure Bedside Device**:
+   - Set `CLOUD_URL=https://your-app-name.onrender.com` on your bedside Raspberry Pi.
 
 ---
 
-## 2. Official Mock Binary & Ground Truth Tool
+## 2. Physical Hardware & Physical Failure Testing
 
-The candidate codebase includes `tools/mock_sim.py`, a spec-compliant simulator. When MayaCardio provides the official binaries:
+The automated test suite executed hard process termination (`kill -9`), socket disconnections, and disk full simulations on Windows x86_64. You should perform the physical hardware tests:
+
+1. **Deploy to Raspberry Pi (ARM64)**:
+   - Copy repo to a Raspberry Pi 4 running Raspberry Pi OS (64-bit).
+   - Install systemd unit:
+     ```bash
+     sudo cp mayacardio-pipeline.service /etc/systemd/system/
+     sudo systemctl daemon-reload
+     sudo systemctl enable --now mayacardio-pipeline
+     ```
+2. **Physical AC Power Pull**:
+   - While streaming, physically pull the power cable from the Raspberry Pi.
+   - Re-insert power and verify automatic boot, service restart, and DB integrity (`pipeline status`).
+3. **Physical Network Cable Pull**:
+   - Disconnect the Ethernet cable / turn off WiFi.
+   - Verify mode switch to `offline` in `pipeline status`.
+   - Re-insert cable and verify automatic return to `online` and backlog catch-up.
+4. **1-Hour Continuous Resource Run on ARM64**:
+   - Run the 1-hour profiling benchmark on the physical board:
+     ```bash
+     python scripts/run_1hour_benchmark.py --duration 3600 --mode signal
+     ```
+
+---
+
+## 3. Official Mock Binary & Ground Truth Tool
+
+The candidate repository ships with `tools/mock_sim.py`, a spec-compliant simulator. When the hiring team provides the official binaries:
 1. Make the binary executable:
    ```bash
    chmod +x biosignal-mock check_ground_truth
@@ -43,37 +70,13 @@ The candidate codebase includes `tools/mock_sim.py`, a spec-compliant simulator.
 
 ---
 
-## 3. Deployment on Physical Raspberry Pi Hardware
-
-1. **Flash OS**: Install **Raspberry Pi OS (64-bit)** onto a high-endurance microSD card or USB SSD.
-2. **Clone & Set Up**:
-   ```bash
-   git clone <YOUR_REPO_URL> ~/MayaCardio
-   cd ~/MayaCardio
-   python3 -m venv venv
-   source venv/bin/activate
-   pip install .
-   ```
-3. **Install Systemd Service**:
-   ```bash
-   sudo cp mayacardio-pipeline.service /etc/systemd/system/
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now mayacardio-pipeline
-   ```
-4. **Physical Power Cut Test**:
-   - While streaming, pull the physical power plug from the Raspberry Pi.
-   - Re-insert power and allow the board to boot.
-   - Run `python pipeline status` and check `journalctl -u mayacardio-pipeline -e` to confirm automatic resumption.
-
----
-
 ## 4. Record Technical Demonstration Video (<= 5 Minutes)
 
-1. Follow the exact shot list in `DEMO_SCRIPT.md`.
+1. Follow the exact shot list in [`DEMO_SCRIPT.md`](file:///D:/IdeaProjects/MayaCardio/DEMO_SCRIPT.md).
 2. Cover:
    - Normal streaming and latency (`pipeline status`).
-   - Network cut and automatic switch to OFFLINE (`<= 10s`).
-   - Backlog catch-up upon network restore (`<= 10s`).
+   - Network cut and automatic switch to OFFLINE ($\le 10$ s).
+   - Backlog catch-up upon network restore ($\le 10$ s).
    - Process termination (`kill -9`) and clean resumption.
    - Power cut simulation and database integrity verification.
 3. Upload to YouTube (Unlisted), Loom, or Google Drive (public link).
@@ -81,6 +84,6 @@ The candidate codebase includes `tools/mock_sim.py`, a spec-compliant simulator.
 ---
 
 ## 5. Case Submission
-- Copy the GitHub Repository Link.
-- Copy the Demonstration Video Link.
-- Complete the MayaCardio submission form.
+- Copy GitHub Repository Link.
+- Copy Demonstration Video Link.
+- Complete the MayaCardio assessment submission form.

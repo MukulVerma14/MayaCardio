@@ -4,24 +4,28 @@ This document presents empirical verification results and actual verbatim execut
 
 ---
 
-## 1. Summary Test Matrix
+## 1. Test Audit & Classification Matrix
 
-All tests were executed against the codebase using the master runner `scripts/run_all_tests.py`:
+All tests were executed on **Windows 10/11 x86_64 (Python 3.12.3)** against real TCP sockets, processes, and database instances:
 
-| Test Description | Target Requirement | Status | Duration |
-| :--- | :--- | :---: | :---: |
-| **Abrupt Daemon Kill (-9) & Resumption** | SQLite WAL integrity, 0 duplicates, resume cursor | **PASS** | 6.2s |
-| **Network Outage & Automatic Mode Switching** | Switch to offline <= 10s, restore to online <= 10s, 0 loss | **PASS** | 21.3s |
-| **Backlog Catch-Up Throughput Benchmark** | Sustained upload rate >= 6,500 samples/sec | **PASS** | 3.3s |
-| **Fault Proxy (Corrupt CRC, Dups, Stall)** | Catch bad CRC, deduplicate, honest loss logging | **PASS** | 9.7s |
-| **Disk Full (ENOSPC) & Emergency Allowance** | 512KB reserve released, loss logged, no silent crash | **PASS** | 0.2s |
-| **System Clock Jump Resilience** | Monotonic timers immune to +/- 2 hour wall clock jumps | **PASS** | 0.9s |
-| **Ground Truth Export Comparison** | Line-by-line verification against simulator ground truth | **PASS** | 7.5s |
-| **Pytest Unit & Property Suite (21 tests)** | Parity, signal 60/90/72 bpm, ramp arithmetic, rounding | **PASS** | 5.8s |
+| Test Description | Execution Platform | Status | Empirical Outcome | Classification |
+| :--- | :--- | :---: | :---: | :---: |
+| **Abrupt Daemon Kill & Resumption** (`test_kill_daemon.py`) | Windows x86_64 | **PASS** (6.2s) | Hard process kill mid-write; `PRAGMA integrity_check` ok; 0 duplicates | `[MEASURED]` |
+| **Network Loss & Mode Switch** (`test_network_switch.py`) | Windows x86_64 | **PASS** (21.3s) | Offline switch: **6.08s**; Online restore: **2.42s**; 0 loss/duplicates | `[MEASURED]` |
+| **Backlog Throughput Benchmark** (`test_catchup_rate.py`) | Windows x86_64 | **PASS** (3.3s) | **12,455.7 samples/s** sustained over 130,000 samples | `[MEASURED]` |
+| **Fault Proxy Injection** (`test_fault_proxy.py`) | Windows x86_64 | **PASS** (9.7s) | Corrupt CRC re-read; duplicates ignored; stall handled | `[MEASURED]` |
+| **Disk Full (ENOSPC) Emergency** (`test_disk_full.py`) | Windows x86_64 | **PASS** (0.2s) | 512KB reserve released; `disk_full` loss recorded; no crash | `[MEASURED]` |
+| **System Clock Jump Resilience** (`test_clock_jump.py`) | Windows x86_64 | **PASS** (0.9s) | Monotonic timers & sample index math immune to +/-2h wall clock shift | `[MEASURED]` |
+| **Ground Truth Export Match** (`test_ground_truth.py`) | Windows x86_64 | **PASS** (7.5s) | Device & cloud exports matched simulator ground truth exactly | `[MEASURED]` |
+| **Cloud Service Restart** (`test_cloud_restart.py`) | Windows x86_64 | **PASS** (4.7s) | 100% data, losses, and window results survive cloud process kill | `[MEASURED]` |
+| **Pytest Unit & Property Suite** (21 tests) | Windows x86_64 | **PASS** (5.8s) | Math parity, 60/90/72 bpm HR, ramp arithmetic, rounding | `[MEASURED]` |
+| **1-Hour Continuous Online Run** | ARM64 Linux | *Not Run* | Profiler ran for 10s on x86_64; 3600s ARM64 run: **not run** | `[PROJECTED]` |
+| **2-Hour Outage Full Drain (5.76M)** | Any Platform | *Not Run* | Derived from 130k-sample rate (5.76M / 12,455 = ~7.7 min): **not run** | `[PROJECTED]` |
+| **Physical Hardware AC Power Pull** | Raspberry Pi board | *Not Run* | Process kill tested; physical cable pull: **not run** | `[UNVERIFIED]` |
 
 ---
 
-## 2. Detailed Test Logs & Outputs
+## 2. Verbatim Test Execution Logs
 
 ### Test 1: Abrupt Daemon Kill (-9) & Recovery (`scripts/test_kill_daemon.py`)
 ```text
@@ -143,6 +147,20 @@ Emergency reserve file released due to ENOSPC
 === TEST RESULT: PASS ===
 ```
 
+### Test 8: Cloud Service Restart & Data Persistence (`scripts/test_cloud_restart.py`)
+```text
+=== [TEST 8] CLOUD SERVICE RESTART & DATA PERSISTENCE ===
+[+] Starting cloud service instance 1 on http://127.0.0.1:8019...
+[+] Ingested 801 samples and 1 loss record into cloud instance 1
+[+] Cloud instance 1 status: total_samples=801
+[!] Terminating cloud service process abruptly...
+[+] Starting cloud service instance 2 (restarted)...
+[+] Cloud instance 2 status: total_samples=801
+[+] Export lines recovered after restart: 802
+[+] Verified window 0 result persisted: complete=True
+=== TEST RESULT: PASS ===
+```
+
 ### Pytest Unit & Property Suite Execution
 ```text
 ============================= test session starts =============================
@@ -158,12 +176,15 @@ tests\test_rounding.py ....                                              [ 80%]
 tests\test_storage.py ...                                                [ 95%]
 tests\test_uploader.py .                                                 [100%]
 
-============================= 21 passed in 5.78s ==============================
+============================= 21 passed in 5.75s ==============================
 ```
 
 ---
 
-## 3. Physical Hardware and Simulated Testing Disclosures
+## 3. Disclosures: Physical Hardware & Unrun Long Tests
 
-- Tests 1 through 7 and all unit tests were verified and run with real processes, TCP sockets, HTTP servers, and SQLite databases.
-- Hardware-specific tests (e.g. cutting physical wall AC power to a Raspberry Pi board or cutting a physical Ethernet cable) are detailed in `HUMAN_TODO.md` with instructions on how to replicate on real hardware.
+In strict adherence to reporting integrity:
+- **Test Platform**: All automated test runs reported above were executed on **Windows 10/11 x86_64 with Python 3.12.3**, not on a physical ARM64 Linux board.
+- **Power Cut Testing**: Tested as an abrupt operating system process kill (`proc.kill()` with `taskkill /F` / `kill -9`). A physical hardware AC power pull has **not been run** (marked `[UNVERIFIED ON PHYSICAL BOARD]`).
+- **2-Hour Outage Catch-Up**: The rate of **12,455.7 samples/s** was measured during a 130,000-sample test run. Draining 5.76M samples in ~7.7 minutes is an **extrapolated projection**, as a full 2-hour accumulation was **not run**.
+- **1-Hour Continuous Resource Run**: Resource profiling in `scripts/run_1hour_benchmark.py` was executed for a duration of **10 seconds** on x86_64. A 3600-second continuous test on ARM64 has **not been run**.

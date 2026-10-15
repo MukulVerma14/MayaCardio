@@ -4,15 +4,25 @@ Production-grade, crash-resilient edge data pipeline built for a Raspberry Pi-cl
 
 ---
 
-## Key Highlights & Guarantees
+## Technical Audit & Verification Summary
 
-1. **Zero Data Loss**: Every sensor sample received is committed locally to SQLite in WAL mode with `PRAGMA synchronous = FULL` (with `fsync`) before advancing the reader cursor.
-2. **Online Latency**: Computes and streams 1-second window results to the cloud with P95 latency **< 1.2s** (well under the 5s requirement).
-3. **Continuous Offline Processing**: When the network drops, data continues collecting to disk and the device processes windows locally using the exact same mathematical core.
-4. **Autonomous Mode Switching**: Switches to offline mode in **~6.0s** (< 10s target) on network loss; restores to online mode in **~2.4s** (< 10s target) on network return.
-5. **Ultra-High Catch-Up Throughput**: Uploads post-outage backlog at sustained rates exceeding **12,400 samples/sec** (benchmark measured), catching up a 2-hour outage (5.76M samples) in under 8 minutes (15 min limit).
-6. **Honest Accounting**: Never invents or interpolates values; records exact index ranges and reasons for every gap (`buffer_overflow`, `mock_stall`, `disk_full`, `session_change`).
-7. **100% Free Tier**: Python 3.11+, zero paid dependencies, deployable on free cloud tiers (Render, Fly.io, Neon).
+Every claim and performance figure in this repository is strictly classified below according to empirical execution:
+- `[MEASURED]`: Empirically validated with real process execution and verified logs.
+- `[PROJECTED / EXTRAPOLATED]`: Derived mathematically from empirical measurements.
+- `[UNVERIFIED / NOT RUN]`: Requires physical hardware or long-duration runs not yet executed.
+
+| Requirement / Metric | Claim | Audit Classification | Evidence & Context |
+| :--- | :--- | :---: | :--- |
+| **Data Preservation** | Zero loss of committed data | `[MEASURED]` | Verified via `test_kill_daemon.py` (`kill -9` process kill). SQLite WAL + `synchronous=FULL` passed `PRAGMA integrity_check`. |
+| **Physical Power Pull** | Survives AC hardware disconnect | `[PROJECTED]` | Hard process kill tested. Physical power plug pull requires real hardware (`HUMAN_TODO.md`). |
+| **Online Window Latency** | Results appear within 5s | `[MEASURED]` | P95 latency measured at **~1.1s** on local network during streaming benchmark. |
+| **Offline Switch Time** | Switch to offline $\le 10$ s | `[MEASURED]` | Measured at **6.08s** upon network cutoff (`test_network_switch.py`). |
+| **Online Restore Time** | Switch back to online $\le 10$ s | `[MEASURED]` | Measured at **2.42s** (theoretical hysteresis: 2 probes $\times$ 2.0s = 4.0s max). |
+| **Backlog Catch-Up Rate** | Upload rate $\ge 6,500$ samples/s | `[MEASURED]` | Measured sustained rate of **12,455.7 samples/s** over 130,000 samples (`test_catchup_rate.py`). |
+| **2-Hour Outage Recovery** | Drains 5.76M samples in $< 15$ min | `[PROJECTED]` | Extrapolated from measured 12,455 samples/s ($\approx 7.7$ min projected). Full 2-hour run not executed. |
+| **Cloud Data Persistence** | Survives cloud service restart | `[MEASURED]` | Verified via `test_cloud_restart.py`; 100% data intact across hard cloud server restart. |
+| **Resource Profile Duration** | CPU & Memory footprint | `[MEASURED (10s)]` | Measured over 10s run (CPU 25.9% of 1 core, RSS 31.85 MB). Full 3600s run: `[NOT RUN]`. |
+| **Execution Platform** | Test execution environment | `[MEASURED]` | Tests executed on **Windows 10/11 x86_64, Python 3.12.3**. Target board: **ARM64 Linux**. |
 
 ---
 
@@ -20,7 +30,7 @@ Production-grade, crash-resilient edge data pipeline built for a Raspberry Pi-cl
 
 ```mermaid
 flowchart LR
-    subgraph Device ["Bedside Device (Raspberry Pi ARM64)"]
+    subgraph Device ["Bedside Device (Target: Raspberry Pi ARM64)"]
         Mock["biosignal-mock\n(TCP 7100)"] -->|Raw Lines| Reader["Reader Thread\n(CRC-32 verify)"]
         Reader -->|fsync commit| DB[("SQLite DB (WAL)\nsynchronous=FULL")]
         DB --> OfflineProc["Device Offline\nProcessor"]
@@ -29,16 +39,16 @@ flowchart LR
         ConnMon["Connectivity\nMonitor"] -.->|Mode| DB
     end
     
-    subgraph Cloud ["Free Cloud Backend (FastAPI)"]
+    subgraph Cloud ["Free Cloud Backend (Render.com + Neon PostgreSQL)"]
         Uploader -->|Gzip Batches| CloudAPI["Ingest API\n(/api/v1/ingest)"]
         CloudAPI --> SharedCore["Shared Core\nProcessor"]
-        SharedCore --> CloudDB[("Cloud Database")]
+        SharedCore --> CloudDB[("Neon Serverless\nPostgreSQL")]
     end
 ```
 
 ---
 
-## Installation & Setup on Raspberry Pi OS (ARM64)
+## Installation & Setup on Raspberry Pi OS (ARM64 Target)
 
 ### 1. Prerequisites (Fresh Board)
 ```bash
@@ -75,13 +85,25 @@ journalctl -u mayacardio-pipeline -f
 
 ---
 
-## Cloud Deployment (100% Free Tier)
+## Cloud Deployment (100% Free Tier, No Credit Card Required)
 
-Deploy `cloud/server.py` to **Render.com** (Free Web Service) or **Fly.io**:
-- **Build Command**: `pip install .`
-- **Start Command**: `uvicorn cloud.server:app --host 0.0.0.0 --port $PORT`
-- **Environment Variables**:
-  - `CLOUD_DB_PATH`: `/data/cloud_store.db` (or configure Postgres via `CLOUD_DATABASE_URL`)
+Deploy `cloud/server.py` to **Render.com** (Free Web Service) using **Neon.tech** (Free Serverless PostgreSQL):
+
+1. **Database Setup (Neon.tech)**:
+   - Create a free project at [neon.tech](https://neon.tech) (0.5 GB free storage, no credit card required).
+   - Copy the PostgreSQL connection string: `postgres://user:password@ep-...neon.tech/neondb?sslmode=require`.
+
+2. **Web Service Deployment (Render.com)**:
+   - Create a free account at [render.com](https://render.com) (no credit card required).
+   - Connect repository and select **New Web Service**.
+   - Build Command: `pip install .`
+   - Start Command: `uvicorn cloud.server:app --host 0.0.0.0 --port $PORT`
+   - Environment Variable: `CLOUD_DATABASE_URL=postgres://user:password@ep-...neon.tech/neondb?sslmode=require`
+
+3. **Render Cold-Start & Keepalive Behavior**:
+   - Render free instances spin down after 15 minutes of inbound HTTP inactivity. Cold starts take ~50 seconds, which would violate the 5s result latency.
+   - **Built-in Keepalive**: While patient monitoring is active, the bedside device's `ConnectivityMonitor` transmits a lightweight `/api/v1/heartbeat` probe every **2.0 seconds**.
+   - This regular probe keeps the free Render web service continuously warm and active, preventing cold-start spin-down while the bedside device is in service.
 
 ---
 
@@ -96,32 +118,6 @@ The device program is named `pipeline`:
 | `pipeline export --session <ID> --from device` | Streams samples and losses in JSON lines format directly from local SQLite |
 | `pipeline export --session <ID> --from cloud` | Streams samples and losses from the cloud backend |
 | `pipeline results --session <ID>` | Prints computed window metric results for the session |
-
----
-
-## Developer Simulation & Testing Tools
-
-### 1. Spec-Compliant Mock Simulator (`tools/mock_sim.py`)
-Emulates the company's `biosignal-mock` binary during development:
-```bash
-# Signal mode (ECG signal with 60 -> 90 -> 72 bpm cycle)
-python tools/mock_sim.py --mode signal --port 7100
-
-# Ramp mode (Linear modular arithmetic)
-python tools/mock_sim.py --mode ramp --port 7100
-
-# With ground-truth logging enabled
-python tools/mock_sim.py --mode signal --port 7100 --ground-truth-log ground_truth.jsonl
-```
-
-### 2. Fault Injection Proxy (`tools/fault_proxy.py`)
-Sits between reader and mock to inject faults on demand:
-```bash
-python tools/fault_proxy.py --listen-port 7101 --target-port 7100 --control-port 7199
-```
-*Inject faults dynamically via HTTP:*
-- `curl -X POST http://127.0.0.1:7199/fault -d '{"action":"corrupt_crc","count":3}'`
-- `curl -X POST http://127.0.0.1:7199/fault -d '{"action":"stall_sensor","sensor":2,"duration":5.0}'`
 
 ---
 
@@ -145,12 +141,7 @@ Executes:
 5. `scripts/test_disk_full.py`: ENOSPC handling and emergency reserve allowance.
 6. `scripts/test_clock_jump.py`: Clock jump (+/- 2h) immunity via monotonic timers.
 7. `scripts/test_ground_truth.py`: Line-by-line verification against simulator ground truth.
-
-### 3. Resource Profiling Benchmark
-```bash
-python scripts/run_1hour_benchmark.py --duration 3600
-```
-Measures average CPU, peak RSS, disk writes, network transfer, and latency.
+8. `scripts/test_cloud_restart.py`: Cloud process termination and 100% data persistence.
 
 ---
 
@@ -158,7 +149,7 @@ Measures average CPU, peak RSS, disk writes, network transfer, and latency.
 
 - [`DESIGN.md`](file:///D:/IdeaProjects/MayaCardio/DESIGN.md): Architecture diagram, guarantees, power cut analysis, and assumptions.
 - [`EVIDENCE.md`](file:///D:/IdeaProjects/MayaCardio/EVIDENCE.md): Empirical test logs and verbatim test outputs.
-- [`RESOURCES.md`](file:///D:/IdeaProjects/MayaCardio/RESOURCES.md): Resource benchmarks and ARM64 profiling.
+- [`RESOURCES.md`](file:///D:/IdeaProjects/MayaCardio/RESOURCES.md): Resource benchmarks and ARM64 profiling instructions.
 - [`AI_DISCLOSURE.md`](file:///D:/IdeaProjects/MayaCardio/AI_DISCLOSURE.md): Disclosure of AI tools and verification methodology.
 - [`DEMO_SCRIPT.md`](file:///D:/IdeaProjects/MayaCardio/DEMO_SCRIPT.md): Shot list and commands for the <= 5 min demo video.
 - [`HUMAN_TODO.md`](file:///D:/IdeaProjects/MayaCardio/HUMAN_TODO.md): Candidate action items (accounts, hardware, video, submission).

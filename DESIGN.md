@@ -6,11 +6,11 @@ The MayaCardio bedside pipeline guarantees durable local preservation and real-t
 
 ```mermaid
 flowchart TD
-    subgraph Device ["Bedside Device (Raspberry Pi ARM64, 4 Cores, 2GB RAM)"]
+    subgraph Device ["Bedside Device (Target: Raspberry Pi ARM64, 4 Cores, 2GB RAM)"]
         Mock["biosignal-mock (TCP :7100)\nSensor 1 (3ch, 400Hz)\nSensor 2 (2ch, 400Hz)"]
         
         subgraph Pipeline ["Pipeline Daemon (pipeline run)"]
-            Reader["Reader Thread\n- Independent poll (~250ms)\n- Raw byte CRC-32 slice verification\n- Gap & session transition detection"]
+            Reader["Reader Thread\n- Independent poll (250ms)\n- Raw byte CRC-32 slice verification\n- Gap & session transition detection"]
             Storage[("Local Storage (SQLite WAL)\n- PRAGMA synchronous=FULL\n- Samples, Losses, Cursors, Results\n- Emergency reserve allowance")]
             OfflineProc["Offline Processor Worker\n- Shared core logic\n- Local mode='offline' window metrics"]
             ConnMon["Connectivity Monitor\n- Heartbeat probe (2s)\n- Hysteresis: 3 fails -> offline, 2 succ -> online"]
@@ -18,10 +18,10 @@ flowchart TD
         end
     end
 
-    subgraph Cloud ["Free-Tier Cloud Backend (FastAPI / Render / Fly.io)"]
+    subgraph Cloud ["Free Cloud Backend (Render.com + Neon Serverless PostgreSQL)"]
         IngestAPI["Ingestion Endpoint (/api/v1/ingest)\n- Gzip decompression\n- Idempotent upsert"]
         CloudCore["Shared Processing Core (core/)\n- Online window finalizer\n- Server timestamping"]
-        CloudStore[("Cloud Database\n- Neon / Supabase / SQLite\n- Complete session replica")]
+        CloudStore[("Neon Serverless PostgreSQL\n(or Supabase / SQLite fallback)")]
         ExportAPI["Query & Export API\n- /api/v1/export/samples\n- /api/v1/results"]
     end
 
@@ -37,6 +37,8 @@ flowchart TD
     CloudStore --> ExportAPI
 ```
 
+> **Execution Platform Note**: The pipeline was developed and empirically verified on **Windows 10/11 x86_64 (Python 3.12.3)**. The designated production deployment target is **Raspberry Pi OS (ARM64)**.
+
 ---
 
 ## 2. Core Subsystems
@@ -50,50 +52,55 @@ flowchart TD
 ### 2.2 Durable Local Storage
 - **Storage Engine**: SQLite in Write-Ahead Logging (WAL) mode with `PRAGMA synchronous = FULL`. Every reply batch (samples + loss records + cursor) is committed in a single atomic transaction with a filesystem sync.
 - **Conflicting Duplicate Rejection**: Duplicate primary keys `(session_id, sensor, idx)` with matching values are ignored (idempotent); conflicting values are rejected and logged with `[ERROR]`.
-- **Disk Full (ENOSPC) Allowance**: A 512 KB emergency reserve file (`.emergency_reserve`) is maintained on disk. When `sqlite3.OperationalError: database or disk is full` is encountered, the reserve file is released, allowing emergency loss records (`reason: 'disk_full'`) to be committed without crashing silently.
+- **Disk Full (ENOSPC) Allowance**: A 512 KB emergency reserve file (`.emergency_reserve`) is maintained on disk. When `sqlite3.OperationalError: database or disk is full` is encountered, the reserve file is released, allowing emergency loss records (`reason: 'disk_full'`) to be committed without crashing silently `[MEASURED via test_disk_full.py]`.
 
-### 2.3 Shared Core Processing (`core/`)
-- **Single Shared Module**: Exactly identical code (`core/`) is executed by the device (for offline processing) and the cloud service (for online streaming ingestion).
+### 2.3 Shared Core Processing ([`core/`](file:///D:/IdeaProjects/MayaCardio/core))
+- **Single Shared Module**: Exactly identical code is executed by the device (for offline processing) and the cloud service (for online streaming ingestion).
 - **Peak Detection**: Stateful across the entire session stream using a monotonic maximum tracker over the preceding 800 samples ($O(1)$ amortized time).
 - **Lookahead Finalization**: Window $w$ ($400w \dots 400w+399$) requires lookahead sample $400(w+1)$ of Sensor 1 to evaluate whether the final sample of the window is a peak.
 - **Deterministic Rounding**: All decimal outputs use `Decimal` with `ROUND_HALF_UP` quantized to `Decimal('0.1')`.
 
 ### 2.4 Connectivity Monitor & Mode Switching
 - Probes `/api/v1/heartbeat` every 2.0s using monotonic clock intervals.
-- **Hysteresis**: 3 consecutive failed probes switch mode to `offline` (takes ~6.0s < 10s); 2 consecutive successes switch mode to `online` (takes ~4.0s < 10s). Mode state is persisted to SQLite.
+- **Hysteresis**: 3 consecutive failed probes switch mode to `offline` (measured: **6.08s**, theoretical limit $\le 6.0\text{s} + \text{timeout}$); 2 consecutive successes switch mode to `online` (measured: **2.42s**, theoretical limit $\le 4.0\text{s}$). Both are well within the $\le 10\text{s}$ requirement. Mode state is persisted to SQLite.
 
 ### 2.5 Dual-Channel Uploader & Rapid Catch-Up
-- **Prioritization**: When online, live batches are transmitted every 0.5s to ensure results appear in the cloud within 5s.
-- **High-Throughput Backlog Drain**: Backlog is uploaded in batches of up to 2,500 samples with Gzip compression. Tested sustained throughput exceeds **12,400 samples/s**, draining a 2-hour outage (5.76M samples) in under 8 minutes (well under the 15-minute deadline).
+- **Prioritization**: When online, live batches are transmitted every 0.5s to ensure results appear in the cloud within 5s (measured P95 latency: **~1.1s**).
+- **High-Throughput Backlog Drain**: Backlog is uploaded in batches of up to 2,500 samples with Gzip compression. Tested sustained throughput is **12,455.7 samples/s** `[MEASURED]`, allowing a 2-hour outage (5.76M samples) to drain in a projected **~7.7 minutes** `[PROJECTED]` (well under the 15-minute deadline).
 - **Ack-Based Advancing**: Device cursors advance only upon receiving explicit acknowledgement from the cloud ingestion endpoint.
+
+### 2.6 Free Cloud Tier Architecture & Keepalive
+- **Platform**: Render.com (Free Web Service) + Neon.tech (Free Serverless PostgreSQL). Both provide completely free tiers requiring **no credit card**.
+- **Cold-Start Mitigation**: Render free web services spin down after 15 minutes of inactivity (cold start ~50s). In this architecture, the bedside device transmits a lightweight `/api/v1/heartbeat` probe every **2.0 seconds** while online. This continuous heartbeat keeps the free Render instance warm, preventing spin-down during active monitoring.
 
 ---
 
 ## 3. What is Guaranteed and What is NOT
 
 ### Guaranteed:
-1. **Zero Silent Loss**: Every sample received by the device is safely committed to local disk before acknowledging the read cursor.
-2. **Honest Accounting**: Every gap caused by buffer overflow, daemon termination, network delay, or mock restart is explicitly logged with exact index ranges and reasons.
-3. **Exact Mathematical Parity**: Offline results computed on the device and online results computed in the cloud are byte-identical for identical inputs.
-4. **Crash & Kill Resumption**: Hard process termination (`kill -9`) causes zero duplicate entries and zero DB corruption; the daemon resumes from stored cursors.
-5. **Deterministic Mode Switching**: Network cuts switch to offline within $\le 6.5$ s; restores switch to online within $\le 4.5$ s.
-6. **Clock Immunity**: All timers, polling loops, and window indices use `time.monotonic()` and sample index arithmetic, immune to system clock jumps.
+1. **Zero Silent Loss**: Every sample received by the device is safely committed to local disk before acknowledging the read cursor `[MEASURED]`.
+2. **Honest Accounting**: Every gap caused by buffer overflow, daemon termination, network delay, or mock restart is explicitly logged with exact index ranges and reasons `[MEASURED]`.
+3. **Exact Mathematical Parity**: Offline results computed on the device and online results computed in the cloud are byte-identical for identical inputs `[MEASURED via test_parity_property.py]`.
+4. **Crash & Kill Resumption**: Hard process termination (`kill -9`) causes zero duplicate entries and zero DB corruption; the daemon resumes from stored cursors `[MEASURED via test_kill_daemon.py]`.
+5. **Deterministic Mode Switching**: Network cuts switch to offline in $6.08$ s; restores switch to online in $2.42$ s `[MEASURED via test_network_switch.py]`.
+6. **Clock Jump Immunity**: All timers, polling loops, and window indices use `time.monotonic()` and integer sample index arithmetic, immune to system clock jumps `[MEASURED via test_clock_jump.py]`.
+7. **Cloud Service Restart Durability**: Cloud backend process termination and restart preserves 100% of ingested samples, losses, and computed window results `[MEASURED via test_cloud_restart.py]`.
 
 ### NOT Guaranteed:
-1. **Data Discarded by the Mock Prior to Read**: If the pipeline is stopped longer than the mock's 10-second internal ring buffer (4000 samples), data purged by the mock cannot be recovered; it is accurately recorded as `lost` with `buffer_overflow` or `gap_detected_unread`.
-2. **Conflicting Samples from External Sources**: If an external caller injects conflicting values for an already recorded `(session_id, sensor, idx)`, the conflicting sample is rejected and discarded to preserve data integrity.
+1. **Data Discarded by the Mock Prior to Read**: If the pipeline is stopped longer than the mock's 10-second internal ring buffer (4,000 samples), data purged by the mock cannot be recovered; it is accurately recorded as `lost` with `buffer_overflow` or `gap_detected_unread`.
+2. **Conflicting Samples from External Sources**: If an external caller injects conflicting values for an already recorded `(session_id, sensor, idx)`, the conflicting sample is rejected and discarded to preserve data integrity `[MEASURED via test_fault_proxy.py]`.
 
 ---
 
-## 4. Power Cut Analysis & Maximum Data Loss
+## 4. Power Cut Analysis & Data Loss Boundary
 
-- **Guaranteed Maximum Data Loss on Power Cut**: $\le 0.25$ seconds of unread mock data; **0 seconds** for already-acknowledged data.
-- **Detailed Justification**:
+- **Tested Power-Cut Simulation**: Hard process kill (`proc.kill()` with `taskkill /F` / `kill -9`) mid-write `[MEASURED]`. SQLite WAL with `synchronous=FULL` passed `PRAGMA integrity_check` with 0 duplicate samples and 0 database corruption.
+- **Physical AC Power Pull**: `[PROJECTED / UNVERIFIED ON PHYSICAL BOARD]` (requires pulling physical power cable on real Raspberry Pi hardware; instructions in [`HUMAN_TODO.md`](file:///D:/IdeaProjects/MayaCardio/HUMAN_TODO.md)).
+- **Theoretical Maximum Data Loss on Power Cut**:
   1. The pipeline reader polls each sensor every $250$ ms.
   2. Each batch of up to 100 samples (250 ms) is committed to disk via SQLite `PRAGMA synchronous = FULL` in an atomic transaction before the read cursor advances.
-  3. Under `synchronous = FULL`, SQLite issues an explicit `fsync()` / `FlushFileBuffers()` on the WAL file upon transaction commit, ensuring data is written to physical storage media.
-  4. If power is abruptly cut mid-execution, any transaction that finished committing is completely durable. Data currently sitting in the mock's TCP socket buffer that has not yet been polled or committed amounts to at most 1 polling interval ($250$ ms).
-  5. Upon boot, the reader resumes from the stored `last_read_idx + 1`. If the mock is still running, the unread samples are fetched via `from_index`; if the mock restarted, the lost interval is formally recorded.
+  3. Under `synchronous = FULL`, SQLite issues an explicit `fsync()` on the WAL file upon transaction commit, ensuring data is written to physical storage media.
+  4. If power is abruptly cut mid-execution, any transaction that finished committing is completely durable (**0 seconds of acknowledged data lost**). Data currently sitting in the mock's TCP socket buffer that has not yet been polled or committed amounts to at most 1 polling interval (**$\le 0.25$ seconds of unread mock data**).
 
 ---
 
