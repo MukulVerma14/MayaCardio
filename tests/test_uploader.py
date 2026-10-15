@@ -6,12 +6,16 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from cloud.server import app, cloud_storage
-from core.types import LossRecord, Sample
-from storage.database import DeviceDatabase
+from cloud.server import app
+from cloud.storage import CloudStorage
+import cloud.server
 
 
 def test_cloud_ingest_and_window_computation(tmp_path: Path) -> None:
+    # Use isolated test database
+    test_db = tmp_path / "test_cloud.db"
+    cloud.server.cloud_storage = CloudStorage(db_path=test_db)
+
     client = TestClient(app)
 
     # Health check
