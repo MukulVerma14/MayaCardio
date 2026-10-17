@@ -171,6 +171,11 @@ class ReaderClient:
                 )
                 self.expected_indices[s] = 0
 
+        # Reset expected index if this sensor has not seen this session before
+        if self.current_session_id is None or self.current_session_id != session_id:
+            self.expected_indices[sensor] = 0
+            exp_idx = 0
+
         self.current_session_id = session_id
 
         # Prepare loss records
@@ -200,12 +205,13 @@ class ReaderClient:
             if accounted_up_to < first_index - 1:
                 gap_start = accounted_up_to + 1
                 gap_end = first_index - 1
+                reason = "not_read_before_pipeline_start" if exp_idx == 0 else "gap_detected_unread"
                 loss_records.append(
                     LossRecord(
                         sensor=sensor,
                         from_index=gap_start,
                         to_index=gap_end,
-                        reason="gap_detected_unread",
+                        reason=reason,
                     )
                 )
 

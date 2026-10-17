@@ -110,11 +110,29 @@ def get_status() -> Dict[str, Any]:
     return cloud_storage.get_status()
 
 
+@app.get("/api/v1/session_verify")
+def session_verify(session_id: str) -> Dict[str, Any]:
+    """Verify sample counts, unique indices, duplicates, and losses for a session."""
+    return cloud_storage.verify_session(session_id)
+
+
 @app.get("/api/v1/export/samples")
-def export_samples(session_id: str) -> StreamingResponse:
+def export_samples(
+    session_id: str,
+    sensor: Optional[int] = None,
+    from_index: Optional[int] = None,
+    to_index: Optional[int] = None,
+    limit: Optional[int] = None,
+) -> StreamingResponse:
     """Stream exported samples and losses for session_id in JSON lines format."""
     def byte_stream():
-        for line in cloud_storage.export_samples_stream(session_id):
+        for line in cloud_storage.export_samples_stream(
+            session_id=session_id,
+            sensor=sensor,
+            from_index=from_index,
+            to_index=to_index,
+            limit=limit,
+        ):
             yield line.encode("utf-8")
 
     return StreamingResponse(byte_stream(), media_type="application/x-ndjson")

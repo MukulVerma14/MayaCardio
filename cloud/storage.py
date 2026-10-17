@@ -429,18 +429,91 @@ class CloudStorage:
                 "processed_windows": total_windows,
             }
 
-    def export_samples_stream(self, session_id: str) -> Generator[str, None, None]:
+    def verify_session(self, session_id: str) -> Dict[str, Any]:
         with self.engine.connect() as conn:
-            # 1. Samples
-            cur = conn.execute(
+            res = conn.execute(
                 text("""
-                    SELECT sensor, idx, ch0, ch1, ch2
+                    SELECT sensor, COUNT(*), MIN(idx), MAX(idx), COUNT(DISTINCT idx)
                     FROM samples
                     WHERE session_id = :sess
-                    ORDER BY idx ASC, sensor ASC
+                    GROUP BY sensor
+                    ORDER BY sensor
                 """),
                 {"sess": session_id},
-            )
+            ).fetchall()
+
+            sensor_stats = {}
+            for r in res:
+                sensor_stats[str(r[0])] = {
+                    "count": r[1],
+                    "min_index": r[2],
+                    "max_index": r[3],
+                    "unique_indices": r[4],
+                    "duplicates": r[1] - r[4],
+                }
+
+            cur_l = conn.execute(
+                text("""
+                    SELECT sensor, from_idx, to_idx, reason, detected_at
+                    FROM losses
+                    WHERE session_id = :sess
+                    ORDER BY sensor, from_idx
+                """),
+                {"sess": session_id},
+            ).fetchall()
+
+            losses = [
+                {
+                    "sensor": r[0],
+                    "from_index": r[1],
+                    "to_index": r[2],
+                    "reason": r[3],
+                    "detected_at": r[4],
+                }
+                for r in cur_l
+            ]
+
+            total_samples = sum(s["count"] for s in sensor_stats.values())
+
+            return {
+                "session_id": session_id,
+                "total_samples": total_samples,
+                "sensors": sensor_stats,
+                "losses": losses,
+            }
+
+    def export_samples_stream(
+        self,
+        session_id: str,
+        sensor: Optional[int] = None,
+        from_index: Optional[int] = None,
+        to_index: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> Generator[str, None, None]:
+        with self.engine.connect() as conn:
+            conn = conn.execution_options(stream_results=True, yield_per=5000)
+            where_clauses = ["session_id = :sess"]
+            params: Dict[str, Any] = {"sess": session_id}
+            if sensor is not None:
+                where_clauses.append("sensor = :sensor")
+                params["sensor"] = sensor
+            if from_index is not None:
+                where_clauses.append("idx >= :from_idx")
+                params["from_idx"] = from_index
+            if to_index is not None:
+                where_clauses.append("idx <= :to_idx")
+                params["to_idx"] = to_index
+
+            sql = f"""
+                SELECT sensor, idx, ch0, ch1, ch2
+                FROM samples
+                WHERE {" AND ".join(where_clauses)}
+                ORDER BY idx ASC, sensor ASC
+            """
+            if limit is not None:
+                sql += f" LIMIT {int(limit)}"
+
+            cur = conn.execute(text(sql), params)
             for r in cur:
                 vals = [r[2], r[3]]
                 if r[4] is not None:
@@ -448,19 +521,24 @@ class CloudStorage:
                 obj = {"sensor": r[0], "index": r[1], "values": vals}
                 yield json.dumps(obj) + "\n"
 
-            # 2. Losses
-            cur_l = conn.execute(
-                text("""
-                    SELECT sensor, from_idx, to_idx, reason
-                    FROM losses
-                    WHERE session_id = :sess
-                    ORDER BY from_idx ASC, sensor ASC
-                """),
-                {"sess": session_id},
-            )
-            for r in cur_l:
-                obj = {"sensor": r[0], "from_index": r[1], "to_index": r[2], "reason": r[3]}
-                yield json.dumps(obj) + "\n"
+            if from_index is None and to_index is None and limit is None:
+                loss_where = ["session_id = :sess"]
+                loss_params: Dict[str, Any] = {"sess": session_id}
+                if sensor is not None:
+                    loss_where.append("sensor = :sensor")
+                    loss_params["sensor"] = sensor
+                cur_l = conn.execute(
+                    text(f"""
+                        SELECT sensor, from_idx, to_idx, reason
+                        FROM losses
+                        WHERE {" AND ".join(loss_where)}
+                        ORDER BY from_idx ASC, sensor ASC
+                    """),
+                    loss_params,
+                )
+                for r in cur_l:
+                    obj = {"sensor": r[0], "from_index": r[1], "to_index": r[2], "reason": r[3]}
+                    yield json.dumps(obj) + "\n"
 
     def export_results_stream(self, session_id: str) -> Generator[str, None, None]:
         with self.engine.connect() as conn:
