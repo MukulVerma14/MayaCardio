@@ -8,21 +8,20 @@ Crash-resilient prototype edge data pipeline built for a Raspberry Pi-class Linu
 
 Every claim and performance figure in this repository is strictly classified below according to empirical execution:
 - `[MEASURED]`: Empirically validated with real process execution and verified logs.
-- `[PROJECTED / EXTRAPOLATED]`: Derived mathematically from empirical measurements.
-- `[UNVERIFIED / NOT RUN]`: Requires physical hardware or long-duration runs not yet executed.
+- `[NOT RUN]`: Requires physical hardware, specific architectures, or long-duration runs not yet executed.
 
 | Requirement / Metric | Claim | Audit Classification | Evidence & Context |
 | :--- | :--- | :---: | :--- |
 | **Data Preservation** | Zero loss of committed data | `[MEASURED]` | Verified via `test_kill_daemon.py` (`kill -9` process kill). SQLite WAL + `synchronous=FULL` passed `PRAGMA integrity_check`. |
-| **Physical Power Pull** | Survives AC hardware disconnect | `[UNVERIFIED]` | Hard process kill tested. Physical power plug pull requires real hardware (`HUMAN_TODO.md`). |
-| **Online Window Latency** | Results appear within 5s | `[MEASURED]` | P95 latency measured at **~1.1s** on localhost during streaming benchmark. |
-| **Offline Switch Time** | Switch to offline $\le 10$ s | `[MEASURED]` | Measured at **6.08s** upon network cutoff (`test_network_switch.py`). |
-| **Online Restore Time** | Switch back to online $\le 10$ s | `[MEASURED]` | Measured at **2.42s** (theoretical hysteresis: 2 probes $\times$ 2.0s = 4.0s max). |
+| **Physical Power Pull** | Survives AC hardware disconnect | `[NOT RUN]` | Hard process kill tested on x86_64. Physical hardware AC power plug pull: `[NOT RUN]`. |
+| **Online Window Latency** | Results appear within 5s | `[MEASURED]` | P95 latency measured at **~1.1s** on localhost during streaming benchmark. No public Render internet latency measured. |
+| **Offline Switch Time** | Switch to offline $\le 10$ s | `[MEASURED]` | Measured at **6.06s** upon network cutoff (`test_network_switch.py`). |
+| **Online Restore Time** | Switch back to online $\le 10$ s | `[MEASURED]` | Measured at **4.55s** (theoretical hysteresis: 2 probes $\times$ 2.0s = 4.0s). |
 | **Backlog Catch-Up Rate** | Upload rate $\ge 6,500$ samples/s | `[MEASURED]` | Measured sustained rate of **12,455.7 samples/s** over 130,000 samples (`test_catchup_rate.py`). |
-| **2-Hour Outage Recovery** | Drains 5.76M samples in $< 15$ min | `[PROJECTED]` | Extrapolated from measured 12,455 samples/s ($\approx 7.7$ min projected). Full 2-hour run not executed. |
-| **Cloud Data Persistence** | Survives cloud service restart | `[MEASURED]` | Measured on the SQLite backend (`test_cloud_restart.py`); 100% data intact across hard cloud server restart. The Postgres path is implemented but not verified on a deployed host. |
-| **Resource Profile Duration** | CPU & Memory footprint | `[MEASURED (10s)]` | Measured over 10s run (CPU 25.9% of 1 core, RSS 31.85 MB). Full 3600s run: `[NOT RUN]`. |
-| **Execution Platform** | Test execution environment | `[MEASURED]` | Tests executed on **Windows 10/11 x86_64, Python 3.12.3**. Target board: **ARM64 Linux**. |
+| **2-Hour Outage Recovery** | Drains 5.76M samples in $< 15$ min | `[NOT RUN]` | Extrapolated theoretically (~7.7 min at 12,455 samples/s). Full 2-hour accumulation test: `[NOT RUN]`. |
+| **Cloud Data Persistence & Integrity** | Zero duplicates in PostgreSQL | `[MEASURED]` | Verified on deployed Render + Neon Postgres backend (session `2ae483f8`): 350,905 device samples, 0 duplicates, 0 missing. |
+| **Resource Profile Duration** | CPU & Memory footprint | `[MEASURED (10s)]` | Measured over 10s run on x86_64 (CPU 25.9% of 1 core, RSS 31.85 MB). Full 3600s run: `[NOT RUN]`. |
+| **Execution Platform** | Test execution environment | `[MEASURED]` | Tests executed on **Windows 10/11 x86_64, Python 3.12.3**. Target board ARM64 run: `[NOT RUN]`. |
 
 ---
 
@@ -39,7 +38,7 @@ flowchart LR
         ConnMon["Connectivity\nMonitor"] -.->|Mode| DB
     end
     
-    subgraph Cloud ["Free Cloud Backend (Render.com + Neon PostgreSQL, intended deployment)"]
+    subgraph Cloud ["Free Cloud Backend (Render.com + Neon PostgreSQL, tested deployment)"]
         Uploader -->|Gzip Batches| CloudAPI["Ingest API\n(/api/v1/ingest)"]
         CloudAPI --> SharedCore["Shared Core\nProcessor"]
         SharedCore --> CloudDB[("Neon Serverless\nPostgreSQL")]
@@ -88,25 +87,21 @@ journalctl -u mayacardio-pipeline -f
 
 ---
 
-## Cloud Deployment (Free Tier, per provider documentation, verify at signup)
+## Cloud Deployment (Render.com + Neon PostgreSQL)
 
-Deploy `cloud/server.py` to **Render.com** (Free Web Service) using **Neon.tech** (Free Serverless PostgreSQL):
+The cloud backend is deployed on **Render.com** (Free Web Service) backed by **Neon.tech** (Serverless PostgreSQL):
+- Live URL: `https://mayacardio-z481.onrender.com`
+- Backend: Neon PostgreSQL (`neondb`)
+- Empirically tested on Windows x86_64 on 17 October 2026.
 
-1. **Database Setup (Neon.tech)**:
-   - Create a free account at [neon.tech](https://neon.tech) (0.5 GB free storage, per provider documentation, verify at signup).
-   - Copy the PostgreSQL connection string: `postgres://user:password@ep-...neon.tech/neondb?sslmode=require`.
+### Deployment Issues Identified and Resolved:
+1. **Packaging Error (Flat-Layout)**: Resolved setuptools flat-layout discovery error during `pip install .` on Render by specifying `py-modules = ["cli"]` in `pyproject.toml`.
+2. **PostgreSQL Reserved Keyword `"window"`**: Resolved `psycopg.errors.SyntaxError: syntax error at or near "window"` by double-quoting `"window"` across all PostgreSQL DDL and queries.
+3. **Environment Support for `CLOUD_URL`**: Configured CLI export and status commands to honor `CLOUD_URL` from the environment when not passed as a flag.
+4. **Cold-Start Latency & Initial Mode Flapping**: Render free tier instances spin down after 15 minutes of inactivity; waking up takes ~50 seconds, causing the device connectivity monitor to enter offline mode temporarily (~20s) until the cloud warms up.
+5. **Status Counter Formula Defect**: Fixed status reporting defect where `(last_acked_idx + 1)` and `(last_read_idx - last_acked_idx)` assumed zero-start and zero-loss intervals. Updated to count actual rows for the active session, guaranteeing `samples_in_cloud <= samples_saved` and `backlog == samples_saved - samples_in_cloud`.
 
-2. **Web Service Deployment (Render.com)**:
-   - Create a free account at [render.com](https://render.com) (per provider documentation, verify at signup).
-   - Connect repository and select **New Web Service**.
-   - Build Command: `pip install .`
-   - Start Command: `uvicorn cloud.server:app --host 0.0.0.0 --port $PORT`
-   - Environment Variable: `CLOUD_DATABASE_URL=postgres://user:password@ep-...neon.tech/neondb?sslmode=require`
-
-3. **Render Cold-Start & Keepalive Behavior**:
-   - Render free instances spin down after 15 minutes of inbound HTTP inactivity. Cold starts take ~50 seconds, which would violate the 5s result latency.
-   - **Keepalive (design intent, not tested)**: While patient monitoring is active, the bedside device's `ConnectivityMonitor` transmits a lightweight `/api/v1/heartbeat` probe every **2.0 seconds**.
-   - This regular probe is designed to keep the free Render web service continuously warm and active, preventing cold-start spin-down while the bedside device is in service.
+> **Note on Free Tiers**: Free tier features, limits, and credit card requirements are per provider documentation (verify at signup). The 2.0s heartbeat keepalive is an architectural design intent to prevent spin-down during active monitoring; its long-term multi-hour effectiveness was not tested.
 
 ---
 
@@ -117,7 +112,7 @@ The device program is named `pipeline`:
 | Command | Description |
 | :--- | :--- |
 | `pipeline run` | Runs the long-running daemon (reader, uploader, connectivity monitor, offline processor) |
-| `pipeline status` | Outputs exactly one JSON line: `{"mode":"online","samples_saved":...,"samples_in_cloud":...,"backlog":...}` |
+| `pipeline status [--session ID]` | Outputs exactly one JSON line: `{"mode":"online","samples_saved":...,"samples_in_cloud":...,"backlog":...}` |
 | `pipeline export --session <ID> --from device` | Streams samples and losses in JSON lines format directly from local SQLite |
 | `pipeline export --session <ID> --from cloud` | Streams samples and losses from the cloud backend |
 | `pipeline results --session <ID>` | Prints computed window metric results for the session |
@@ -126,11 +121,11 @@ The device program is named `pipeline`:
 
 ## Running the Automated Test Suite
 
-### 1. Pytest Unit & Property Suite (21 Tests)
+### 1. Pytest Unit & Property Suite (22 Tests)
 ```bash
 pytest tests/
 ```
-Verifies deterministic rounding, 60/90/72 BPM heart-rate logic, ramp arithmetic, offline/online byte parity, and CRC-32 extraction.
+Verifies deterministic rounding, 60/90/72 BPM heart-rate logic, ramp arithmetic, offline/online byte parity, CRC-32 extraction, and status consistency with loss gaps.
 
 ### 2. Failure & Resilience Test Suite
 ```bash
@@ -145,6 +140,16 @@ Executes:
 6. `scripts/test_clock_jump.py`: Clock jump (+/- 2h) immunity via monotonic timers.
 7. `scripts/test_ground_truth.py`: Line-by-line verification against simulator ground truth.
 8. `scripts/test_cloud_restart.py`: Cloud process termination and 100% data persistence.
+
+---
+
+## Known Limitations
+
+1. **Periodic Online/Offline Mode Flapping (Observed, Cause Under Investigation)**: During a continuous 22-minute live deployment run on 17 Oct 2026 (18:37–18:59), the monitor switched `online -> offline -> online` roughly once per minute, with each offline blip lasting only ~2.5s. Empirical tests ruled out concurrent batch ingest blocking (heartbeat RTT remained <1.4s during 2,500-sample uploads). With `probe_timeout_sec = 1.5s`, trans-continental public internet latency jitter (where P99 reached 1,234ms and occasionally exceeded 1.5s for 3 consecutive cycles) or Render free-tier CPU throttling are leading candidate causes.
+2. **Render Free-Tier Cold Starts**: Free instances on Render spin down after 15 minutes of inactivity; waking up an instance requires ~50 seconds, triggering temporary offline mode switching until the cloud service responds.
+3. **Untested on Physical ARM64 Hardware**: All tests and runs were performed on Windows 10/11 x86_64; physical execution on a Raspberry Pi ARM64 board, systemd auto-start, and physical power cable pulls remain `[NOT RUN]`.
+4. **Full 2-Hour Continuous Catch-Up**: Sustained throughput of 12,455.7 samples/s was empirically verified on a 130,000-sample backlog; full 2-hour accumulation (5.76M samples) was `[NOT RUN]`.
+5. **1-Hour Continuous Resource Run**: Resource profiling ran for 10 seconds on x86_64; a full 3600-second continuous benchmark on ARM64 was `[NOT RUN]`.
 
 ---
 

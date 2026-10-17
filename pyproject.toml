@@ -35,5 +35,8 @@ python_files = ["test_*.py"]
 python_functions = ["test_*"]
 pythonpath = ["."]
 
+[tool.setuptools]
+py-modules = ["cli"]
+
 [tool.setuptools.packages.find]
 include = ["core*", "cloud*", "reader*", "storage*", "uploader*", "connectivity*"]

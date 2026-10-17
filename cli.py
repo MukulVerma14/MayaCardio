@@ -90,7 +90,8 @@ def cmd_run(args: argparse.Namespace) -> None:
 def cmd_status(args: argparse.Namespace) -> None:
     """Print one JSON line with current system status."""
     db = DeviceDatabase(args.db)
-    status_info = db.get_status()
+    session_id = getattr(args, "session", None)
+    status_info = db.get_status(session_id=session_id)
     print(json.dumps(status_info, separators=(",", ":")))
 
 
@@ -106,7 +107,7 @@ def cmd_export(args: argparse.Namespace) -> None:
         sys.stdout.flush()
 
     elif source == "cloud":
-        cloud_url = args.cloud_url.rstrip("/")
+        cloud_url = (args.cloud_url or os.environ.get("CLOUD_URL", "http://127.0.0.1:8000")).rstrip("/")
         url = f"{cloud_url}/api/v1/export/samples?session_id={session_id}"
         try:
             with requests.get(url, stream=True, timeout=30.0) as resp:
@@ -148,7 +149,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--mock-port", type=int, default=DEFAULT_MOCK_PORT, help="Mock service port")
 
     # pipeline status
-    subparsers.add_parser("status", help="Print single JSON line with current system status", parents=[parent_parser])
+    status_parser = subparsers.add_parser("status", help="Print single JSON line with current system status", parents=[parent_parser])
+    status_parser.add_argument("--session", default=None, help="Optional session ID to query status for")
 
     # pipeline export --session ID --from device|cloud
     export_parser = subparsers.add_parser("export", help="Export session data", parents=[parent_parser])

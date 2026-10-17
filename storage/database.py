@@ -132,9 +132,10 @@ class DeviceDatabase:
                 INSERT INTO cursors (sensor, session_id, last_read_idx, last_acked_idx, updated_at)
                 VALUES (?, ?, ?, -1, ?)
                 ON CONFLICT(sensor) DO UPDATE SET
-                    session_id=excluded.session_id,
-                    last_read_idx=MAX(cursors.last_read_idx, excluded.last_read_idx),
-                    updated_at=excluded.updated_at
+                    last_read_idx = CASE WHEN cursors.session_id = excluded.session_id THEN MAX(cursors.last_read_idx, excluded.last_read_idx) ELSE excluded.last_read_idx END,
+                    last_acked_idx = CASE WHEN cursors.session_id = excluded.session_id THEN cursors.last_acked_idx ELSE -1 END,
+                    session_id = excluded.session_id,
+                    updated_at = excluded.updated_at
                 """,
                 (sensor, session_id, cursor_idx, now),
             )
@@ -208,8 +209,7 @@ class DeviceDatabase:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 """
-                INSERT INTO results (
-                    session_id, "window", mode, missing_1, missing_2, complete,
+                INSERT INTO results (\n                    session_id, "window", mode, missing_1, missing_2, complete,
                     mean_s1c1, mean_s1c2, mean_s1c3, mean_s2c1, mean_s2c2,
                     min_s1c1, min_s1c2, min_s1c3, min_s2c1, min_s2c2,
                     max_s1c1, max_s1c2, max_s1c3, max_s2c1, max_s2c2,
@@ -284,7 +284,7 @@ class DeviceDatabase:
         conn = self._get_connection()
         try:
             row = conn.execute(
-                "SELECT session_id, last_read_idx, last_acked_idx FROM cursors WHERE sensor=?",
+                "SELECT session_id, last_read_idx, last_acked_idx FROM cursors WHERE sensor=? ",
                 (sensor,),
             ).fetchone()
             if row:
@@ -478,28 +478,74 @@ class DeviceDatabase:
         finally:
             conn.close()
 
-    def get_status(self) -> Dict[str, Any]:
-        """Return status metrics: current mode, samples saved, samples in cloud, backlog."""
+    def get_status(self, session_id: Optional[str] = None) -> Dict[str, Any]:
+        """Return status metrics: current mode, samples saved, samples in cloud, backlog.
+
+        Metrics are strictly per-session and consistent:
+        - mode: current operational mode ('online' or 'offline').
+        - samples_saved: exact count of received samples physically saved on device for the session.
+        - samples_in_cloud: exact count of saved device samples confirmed acknowledged by the cloud
+          (idx <= last_acked_idx). Always <= samples_saved.
+        - backlog: exact count of saved device samples waiting to be acknowledged by the cloud
+          (idx > last_acked_idx). Exactly equals samples_saved - samples_in_cloud.
+        """
         conn = self._get_connection()
         try:
-            mode_row = conn.execute("SELECT value FROM system_state WHERE key='mode'").fetchone()
+            cur = conn.cursor()
+            cur.execute("BEGIN TRANSACTION")
+
+            mode_row = cur.execute("SELECT value FROM system_state WHERE key='mode'").fetchone()
             current_mode = mode_row["value"] if mode_row else "online"
 
-            samples_saved_row = conn.execute("SELECT COUNT(*) AS total FROM samples").fetchone()
-            samples_saved = samples_saved_row["total"] if samples_saved_row else 0
+            cursor_rows = cur.execute(
+                "SELECT sensor, session_id, last_read_idx, last_acked_idx FROM cursors"
+            ).fetchall()
 
-            # Estimate samples in cloud and backlog from cursors
-            # For each sensor: last_acked_idx + 1 samples confirmed in cloud
-            cursor_rows = conn.execute("SELECT sensor, last_read_idx, last_acked_idx FROM cursors").fetchall()
+            # Identify target session: explicit argument, active cursor session, or latest sample session
+            target_session = session_id
+            if not target_session and cursor_rows:
+                for r in cursor_rows:
+                    if r["session_id"]:
+                        target_session = r["session_id"]
+                        break
+
+            if not target_session:
+                sess_row = cur.execute("SELECT session_id FROM samples ORDER BY rowid DESC LIMIT 1").fetchone()
+                if sess_row:
+                    target_session = sess_row["session_id"]
+
+            if not target_session:
+                cur.execute("COMMIT")
+                return {
+                    "mode": current_mode,
+                    "samples_saved": 0,
+                    "samples_in_cloud": 0,
+                    "backlog": 0,
+                }
+
+            # 1. Total samples physically saved on device for this session
+            samples_saved = cur.execute(
+                "SELECT COUNT(*) FROM samples WHERE session_id = ?",
+                (target_session,),
+            ).fetchone()[0]
+
+            # 2. Count acknowledged samples on cloud (idx <= last_acked_idx)
             samples_in_cloud = 0
-            backlog = 0
             for r in cursor_rows:
-                acked = r["last_acked_idx"]
-                read_idx = r["last_read_idx"]
-                if acked >= 0:
-                    samples_in_cloud += (acked + 1)
-                if read_idx > acked:
-                    backlog += (read_idx - acked)
+                if r["session_id"] != target_session:
+                    continue
+                sensor = r["sensor"]
+                acked_idx = r["last_acked_idx"]
+                if acked_idx >= 0:
+                    c_acked = cur.execute(
+                        "SELECT COUNT(*) FROM samples WHERE session_id = ? AND sensor = ? AND idx <= ?",
+                        (target_session, sensor, acked_idx),
+                    ).fetchone()[0]
+                    samples_in_cloud += c_acked
+
+            # Backlog is the exact count of saved samples not yet acked by the cloud
+            backlog = max(0, samples_saved - samples_in_cloud)
+            cur.execute("COMMIT")
 
             return {
                 "mode": current_mode,
@@ -507,6 +553,12 @@ class DeviceDatabase:
                 "samples_in_cloud": samples_in_cloud,
                 "backlog": backlog,
             }
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
         finally:
             conn.close()
 

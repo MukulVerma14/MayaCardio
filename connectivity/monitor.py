@@ -81,23 +81,39 @@ class ConnectivityMonitor:
         while self.running:
             t0 = time.monotonic()
             success = False
+            status_desc = "err"
 
             try:
                 resp = session.post(heartbeat_url, timeout=self.probe_timeout_sec)
                 success = (resp.status_code == 200)
-            except Exception:
+                status_desc = f"HTTP {resp.status_code}" if resp.status_code != 200 else "HTTP 200"
+            except requests.exceptions.Timeout:
                 success = False
+                status_desc = "timeout"
+            except Exception as e:
+                success = False
+                status_desc = f"err: {type(e).__name__}"
+
+            rtt = time.monotonic() - t0
 
             with self.lock:
                 if success:
                     self.consecutive_successes += 1
                     self.consecutive_failures = 0
+                    logger.debug(
+                        f"Heartbeat probe: success ({status_desc}), rtt={rtt*1000:.1f}ms, "
+                        f"succ_cnt={self.consecutive_successes}, mode={self.current_mode}"
+                    )
 
                     if self.current_mode == "offline" and self.consecutive_successes >= 2:
                         self._transition_to("online")
                 else:
                     self.consecutive_failures += 1
                     self.consecutive_successes = 0
+                    logger.warning(
+                        f"Heartbeat probe: FAILED ({status_desc}), rtt={rtt*1000:.1f}ms, "
+                        f"fail_cnt={self.consecutive_failures}/3, mode={self.current_mode}"
+                    )
 
                     if self.current_mode == "online" and self.consecutive_failures >= 3:
                         self._transition_to("offline")

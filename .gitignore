@@ -49,6 +49,7 @@ env/
 .coverage
 htmlcov/
 *.log
+*.jsonl
 test_run_*/
 
 # Operating system files

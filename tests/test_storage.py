@@ -94,3 +94,56 @@ def test_export_streams(tmp_path: Path) -> None:
     assert loss_obj["from_index"] == 5
     assert loss_obj["to_index"] == 10
     assert loss_obj["reason"] == "overflow"
+
+
+def test_status_consistency_with_gaps_and_non_zero_start(tmp_path: Path) -> None:
+    """Verify that get_status calculates samples_in_cloud based on physical rows,
+    preventing non-zero start index or loss gaps from inflating samples_in_cloud."""
+    db_file = tmp_path / "test_status.db"
+    db = DeviceDatabase(db_file)
+
+    sess_1 = "sess_with_gap"
+    # Sensor 1: gap 0..4999, samples 5000..5099 (100 samples)
+    s1_samples = [Sample(sensor=1, idx=i, values=[10, 20, 30]) for i in range(5000, 5100)]
+    s1_losses = [LossRecord(sensor=1, from_index=0, to_index=4999, reason="buffer_overflow")]
+    db.save_reply_batch(sess_1, sensor=1, samples=s1_samples, losses=s1_losses, next_read_idx=5100)
+
+    # Sensor 2: gap 0..4999, samples 5000..5099 (100 samples)
+    s2_samples = [Sample(sensor=2, idx=i, values=[400000, 150000]) for i in range(5000, 5100)]
+    s2_losses = [LossRecord(sensor=2, from_index=0, to_index=4999, reason="buffer_overflow")]
+    db.save_reply_batch(sess_1, sensor=2, samples=s2_samples, losses=s2_losses, next_read_idx=5100)
+
+    # Initially nothing acked
+    status_0 = db.get_status(session_id=sess_1)
+    assert status_0["samples_saved"] == 200
+    assert status_0["samples_in_cloud"] == 0
+    assert status_0["backlog"] == 200
+
+    # Ack up to 5049 for sensor 1 (50 samples: 5000..5049) and up to 5049 for sensor 2 (50 samples: 5000..5049)
+    db.advance_acked_cursor(sensor=1, session_id=sess_1, acked_idx=5049)
+    db.advance_acked_cursor(sensor=2, session_id=sess_1, acked_idx=5049)
+
+    status_acked = db.get_status(session_id=sess_1)
+    assert status_acked["samples_saved"] == 200
+    # Must NOT be (5049 + 1) * 2 = 10100!
+    assert status_acked["samples_in_cloud"] == 100
+    assert status_acked["backlog"] == 100
+    assert status_acked["samples_in_cloud"] <= status_acked["samples_saved"]
+    assert status_acked["samples_in_cloud"] + status_acked["backlog"] == status_acked["samples_saved"]
+
+    # Active session status (without specifying session_id) must also reflect sess_1 correctly
+    status_auto = db.get_status()
+    assert status_auto["samples_saved"] == 200
+    assert status_auto["samples_in_cloud"] == 100
+    assert status_auto["backlog"] == 100
+
+    # Switch active session to sess_2
+    sess_2 = "sess_other"
+    db.save_reply_batch(sess_2, sensor=1, samples=[Sample(sensor=1, idx=0, values=[1, 2, 3])], losses=[], next_read_idx=1)
+    db.save_reply_batch(sess_2, sensor=2, samples=[Sample(sensor=2, idx=0, values=[4, 5])], losses=[], next_read_idx=1)
+
+    # Active session status automatically filters to new active session sess_2
+    status_active = db.get_status()
+    assert status_active["samples_saved"] == 2
+    assert status_active["samples_in_cloud"] == 0
+    assert status_active["backlog"] == 2
