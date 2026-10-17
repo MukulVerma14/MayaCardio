@@ -4,24 +4,24 @@ This document contains everything that requires human intervention, physical har
 
 ---
 
-## 1. Cloud Deployment (100% Free Tier, No Credit Card Required)
+## 1. Cloud Deployment (Free Tier, per provider documentation, verify at signup)
 
 The cloud backend is built with FastAPI (`cloud/server.py`) and supports PostgreSQL (Neon / Supabase) via `CLOUD_DATABASE_URL`, or SQLite.
 
 ### Recommended Free Tier Setup:
 1. **Neon Serverless PostgreSQL (neon.tech)**:
-   - Create a free account at [neon.tech](https://neon.tech) (0.5 GB free storage, no credit card required).
+   - Create a free account at [neon.tech](https://neon.tech) (0.5 GB free storage, per provider documentation, verify at signup).
    - Copy the connection string: `postgres://user:password@ep-...neon.tech/neondb?sslmode=require`.
 2. **Render.com (Free Web Service)**:
-   - Create a free account at [render.com](https://render.com) (no credit card required).
+   - Create a free account at [render.com](https://render.com) (per provider documentation, verify at signup).
    - Click **New** -> **Web Service** -> Connect your GitHub repo.
    - Set Build Command: `pip install .`
    - Set Start Command: `uvicorn cloud.server:app --host 0.0.0.0 --port $PORT`
    - Set Environment Variable: `CLOUD_DATABASE_URL=postgres://user:password@ep-...neon.tech/neondb?sslmode=require`
 3. **Render Cold-Start & Keepalive Verification**:
    - Render free instances spin down after 15 minutes of inactivity (cold-start takes ~50s).
-   - The bedside pipeline's `ConnectivityMonitor` sends a lightweight `/api/v1/heartbeat` every **2.0 seconds** while online.
-   - This continuous heartbeat keeps the free Render instance warm, preventing spin-down during active patient monitoring.
+   - **Keepalive (design intent, not tested)**: The bedside pipeline's `ConnectivityMonitor` sends a lightweight `/api/v1/heartbeat` every **2.0 seconds** while online.
+   - This continuous heartbeat is designed to keep the free Render instance warm, preventing spin-down during active patient monitoring.
 4. **Configure Bedside Device**:
    - Set `CLOUD_URL=https://your-app-name.onrender.com` on your bedside Raspberry Pi.
 
@@ -72,7 +72,7 @@ The candidate repository ships with `tools/mock_sim.py`, a spec-compliant simula
 
 ## 4. Record Technical Demonstration Video (<= 5 Minutes)
 
-1. Follow the exact shot list in [`DEMO_SCRIPT.md`](file:///D:/IdeaProjects/MayaCardio/DEMO_SCRIPT.md).
+1. Follow the exact shot list in [`DEMO_SCRIPT.md`](DEMO_SCRIPT.md).
 2. Cover:
    - Normal streaming and latency (`pipeline status`).
    - Network cut and automatic switch to OFFLINE ($\le 10$ s).
