@@ -11,19 +11,19 @@ The cloud backend is built with FastAPI (`cloud/server.py`) and supports Postgre
 ### Recommended Free Tier Setup:
 1. **Neon Serverless PostgreSQL (neon.tech)**:
    - Create a free account at [neon.tech](https://neon.tech) (0.5 GB free storage, per provider documentation, verify at signup).
-   - Copy the connection string: `postgres://user:password@ep-...neon.tech/neondb?sslmode=require`.
+   - Copy your connection string from the Neon console (e.g. `postgres://<user>:<password>@<endpoint>.neon.tech/neondb?sslmode=require`).
 2. **Render.com (Free Web Service)**:
    - Create a free account at [render.com](https://render.com) (per provider documentation, verify at signup).
    - Click **New** -> **Web Service** -> Connect your GitHub repo.
    - Set Build Command: `pip install .`
    - Set Start Command: `uvicorn cloud.server:app --host 0.0.0.0 --port $PORT`
-   - Set Environment Variable: `CLOUD_DATABASE_URL=postgres://user:password@ep-...neon.tech/neondb?sslmode=require`
-3. **Render Cold-Start & Keepalive Verification**:
+   - Set Environment Variable: `CLOUD_DATABASE_URL=<your-neon-database-connection-url>`
+3. **Render Cold-Start & Keepalive Behavior**:
    - Render free instances spin down after 15 minutes of inactivity (cold-start takes ~50s).
    - **Keepalive (design intent, not tested)**: The bedside pipeline's `ConnectivityMonitor` sends a lightweight `/api/v1/heartbeat` every **2.0 seconds** while online.
    - This continuous heartbeat is designed to keep the free Render instance warm, preventing spin-down during active patient monitoring.
 4. **Configure Bedside Device**:
-   - Set `CLOUD_URL=https://your-app-name.onrender.com` on your bedside Raspberry Pi.
+   - Set `CLOUD_URL=https://<your-render-app>.onrender.com` in your environment or pass via `--cloud-url`.
 
 ---
 
