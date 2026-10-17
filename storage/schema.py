@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS cursors (
 -- Results table: computed window metrics for offline (device) and online (cloud)
 CREATE TABLE IF NOT EXISTS results (
     session_id TEXT NOT NULL,
-    window INTEGER NOT NULL,
+    "window" INTEGER NOT NULL,
     mode TEXT NOT NULL,  -- 'online' or 'offline'
     missing_1 INTEGER NOT NULL,
     missing_2 INTEGER NOT NULL,
@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS results (
     magnitude REAL,
     heart_rate REAL,
     processed_at REAL,
-    PRIMARY KEY (session_id, window, mode)
+    PRIMARY KEY (session_id, "window", mode)
 );
 
 -- System state table: persistent mode state (online/offline)
@@ -75,5 +75,5 @@ CREATE TABLE IF NOT EXISTS system_state (
 -- Indexes for efficient queries
 CREATE INDEX IF NOT EXISTS idx_samples_export ON samples (session_id, sensor, idx);
 CREATE INDEX IF NOT EXISTS idx_losses_export ON losses (session_id, sensor, from_idx);
-CREATE INDEX IF NOT EXISTS idx_results_lookup ON results (session_id, window, mode);
+CREATE INDEX IF NOT EXISTS idx_results_lookup ON results (session_id, "window", mode);
 """

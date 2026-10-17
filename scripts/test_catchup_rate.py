@@ -19,6 +19,8 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import requests
+
 from connectivity.monitor import ConnectivityMonitor
 from core.types import Sample
 from storage.database import DeviceDatabase
@@ -36,8 +38,18 @@ def main() -> None:
         except Exception:
             pass
 
+    cloud_db_file = test_dir / "cloud_catchup.db"
+    if cloud_db_file.exists():
+        try:
+            cloud_db_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+
     cloud_port = 8012
     cloud_url = f"http://127.0.0.1:{cloud_port}"
+
+    env = os.environ.copy()
+    env["CLOUD_DATABASE_URL"] = f"sqlite:///{cloud_db_file.resolve()}"
 
     # Step 1: Start Cloud Service
     cloud_cmd = [
@@ -52,8 +64,19 @@ def main() -> None:
         "--log-level",
         "warning",
     ]
-    cloud_proc = subprocess.Popen(cloud_cmd)
-    time.sleep(1.2)
+    cloud_proc = subprocess.Popen(cloud_cmd, env=env)
+
+    # Wait for cloud service to be responsive
+    ready = False
+    for _ in range(30):
+        try:
+            r = requests.post(f"{cloud_url}/api/v1/heartbeat", timeout=0.5)
+            if r.status_code == 200:
+                ready = True
+                break
+        except Exception:
+            time.sleep(0.2)
+    assert ready, f"Cloud service failed to start on {cloud_url}!"
     print(f"[+] Cloud service listening at {cloud_url}")
 
     try:
@@ -106,7 +129,6 @@ def main() -> None:
         assert throughput >= 6500.0, f"Throughput {throughput:.1f} below required 6,500 samples/s!"
 
         # Step 3: Verify cloud database has full copy
-        import requests
         resp = requests.get(f"{cloud_url}/api/v1/status", timeout=5.0)
         assert resp.status_code == 200
         cloud_status = resp.json()

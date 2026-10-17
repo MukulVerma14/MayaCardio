@@ -39,8 +39,11 @@ def normalize_db_url(url: str) -> str:
 class CloudStorage:
     """Storage engine for the cloud backend supporting Neon PostgreSQL and SQLite."""
 
-    def __init__(self, db_url: Optional[str] = None) -> None:
-        raw_url = db_url or DEFAULT_DB_URL
+    def __init__(self, db_url: Optional[str] = None, db_path: Optional[str | Path] = None) -> None:
+        if db_path is not None:
+            raw_url = f"sqlite:///{Path(db_path).resolve()}"
+        else:
+            raw_url = db_url or DEFAULT_DB_URL
         self.db_url = normalize_db_url(raw_url)
         self.is_postgres = self.db_url.startswith("postgresql")
 
@@ -127,7 +130,7 @@ class CloudStorage:
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS results (
                     session_id VARCHAR(64) NOT NULL,
-                    window INTEGER NOT NULL,
+                    "window" INTEGER NOT NULL,
                     mode VARCHAR(32) NOT NULL,
                     missing_1 INTEGER NOT NULL,
                     missing_2 INTEGER NOT NULL,
@@ -150,12 +153,12 @@ class CloudStorage:
                     magnitude DOUBLE PRECISION,
                     heart_rate DOUBLE PRECISION,
                     processed_at DOUBLE PRECISION,
-                    PRIMARY KEY (session_id, window, mode)
+                    PRIMARY KEY (session_id, "window", mode)
                 );
             """ if self.is_postgres else """
                 CREATE TABLE IF NOT EXISTS results (
                     session_id TEXT NOT NULL,
-                    window INTEGER NOT NULL,
+                    "window" INTEGER NOT NULL,
                     mode TEXT NOT NULL,
                     missing_1 INTEGER NOT NULL,
                     missing_2 INTEGER NOT NULL,
@@ -178,14 +181,14 @@ class CloudStorage:
                     magnitude REAL,
                     heart_rate REAL,
                     processed_at REAL,
-                    PRIMARY KEY (session_id, window, mode)
+                    PRIMARY KEY (session_id, "window", mode)
                 );
             """))
 
             # Indexes
             conn.execute(text("CREATE INDEX IF NOT EXISTS idx_samples_export ON samples (session_id, sensor, idx);"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS idx_losses_export ON losses (session_id, sensor, from_idx);"))
-            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_results_lookup ON results (session_id, window, mode);"))
+            conn.execute(text('CREATE INDEX IF NOT EXISTS idx_results_lookup ON results (session_id, "window", mode);'))
 
     def get_or_create_processor(self, session_id: str) -> WindowProcessor:
         if session_id not in self.processors:
@@ -204,40 +207,52 @@ class CloudStorage:
         proc = self.get_or_create_processor(session_id)
 
         with self.engine.begin() as conn:
-            # 1. Ingest samples
-            for s in samples:
-                ch0 = s.values[0] if len(s.values) > 0 else 0
-                ch1 = s.values[1] if len(s.values) > 1 else 0
-                ch2 = s.values[2] if len(s.values) > 2 else None
-
+            # 1. Ingest samples using batch execution
+            if samples:
+                sample_params = [
+                    {
+                        "sess": session_id,
+                        "sensor": s.sensor,
+                        "idx": s.idx,
+                        "ch0": s.values[0] if len(s.values) > 0 else 0,
+                        "ch1": s.values[1] if len(s.values) > 1 else 0,
+                        "ch2": s.values[2] if len(s.values) > 2 else None,
+                    }
+                    for s in samples
+                ]
                 conn.execute(
                     text("""
                         INSERT INTO samples (session_id, sensor, idx, ch0, ch1, ch2)
                         VALUES (:sess, :sensor, :idx, :ch0, :ch1, :ch2)
                         ON CONFLICT (session_id, sensor, idx) DO NOTHING
                     """),
-                    {"sess": session_id, "sensor": s.sensor, "idx": s.idx, "ch0": ch0, "ch1": ch1, "ch2": ch2},
+                    sample_params,
                 )
-                proc.add_sample(s.sensor, s.idx, s.values)
+                for s in samples:
+                    proc.add_sample(s.sensor, s.idx, s.values)
 
-            # 2. Ingest losses
-            for l in losses:
-                det_at = l.detected_at if l.detected_at is not None else server_timestamp
-                conn.execute(
-                    text("""
-                        INSERT INTO losses (session_id, sensor, from_idx, to_idx, reason, detected_at)
-                        VALUES (:sess, :sensor, :f_idx, :t_idx, :reason, :det_at)
-                    """),
+            # 2. Ingest losses using batch execution
+            if losses:
+                loss_params = [
                     {
                         "sess": session_id,
                         "sensor": l.sensor,
                         "f_idx": l.from_index,
                         "t_idx": l.to_index,
                         "reason": l.reason,
-                        "det_at": det_at,
-                    },
+                        "det_at": l.detected_at if l.detected_at is not None else server_timestamp,
+                    }
+                    for l in losses
+                ]
+                conn.execute(
+                    text("""
+                        INSERT INTO losses (session_id, sensor, from_idx, to_idx, reason, detected_at)
+                        VALUES (:sess, :sensor, :f_idx, :t_idx, :reason, :det_at)
+                    """),
+                    loss_params,
                 )
-                proc.add_loss_range(l.sensor, l.from_index, l.to_index)
+                for l in losses:
+                    proc.add_loss_range(l.sensor, l.from_index, l.to_index)
 
             # 3. Finalize online windows
             online_results = proc.finalize_available_windows(processed_at=server_timestamp)
@@ -289,7 +304,7 @@ class CloudStorage:
         conn.execute(
             text("""
                 INSERT INTO results (
-                    session_id, window, mode, missing_1, missing_2, complete,
+                    session_id, "window", mode, missing_1, missing_2, complete,
                     mean_s1c1, mean_s1c2, mean_s1c3, mean_s2c1, mean_s2c2,
                     min_s1c1, min_s1c2, min_s1c3, min_s2c1, min_s2c2,
                     max_s1c1, max_s1c2, max_s1c3, max_s2c1, max_s2c2,
@@ -301,7 +316,8 @@ class CloudStorage:
                     :max_s1c1, :max_s1c2, :max_s1c3, :max_s2c1, :max_s2c2,
                     :mag, :hr, :proc_at
                 )
-                ON CONFLICT (session_id, window, mode) DO UPDATE SET
+                ON CONFLICT (session_id, "window", mode) DO UPDATE SET
+                    "window" = EXCLUDED."window",
                     missing_1 = EXCLUDED.missing_1,
                     missing_2 = EXCLUDED.missing_2,
                     complete = EXCLUDED.complete,
@@ -361,7 +377,7 @@ class CloudStorage:
         conn.execute(
             text("""
                 INSERT INTO results (
-                    session_id, window, mode, missing_1, missing_2, complete,
+                    session_id, "window", mode, missing_1, missing_2, complete,
                     mean_s1c1, mean_s1c2, mean_s1c3, mean_s2c1, mean_s2c2,
                     min_s1c1, min_s1c2, min_s1c3, min_s2c1, min_s2c2,
                     max_s1c1, max_s1c2, max_s1c3, max_s2c1, max_s2c2,
@@ -373,7 +389,8 @@ class CloudStorage:
                     :max_s1c1, :max_s1c2, :max_s1c3, :max_s2c1, :max_s2c2,
                     :mag, :hr, :proc_at
                 )
-                ON CONFLICT (session_id, window, mode) DO UPDATE SET
+                ON CONFLICT (session_id, "window", mode) DO UPDATE SET
+                    "window" = EXCLUDED."window",
                     missing_1 = EXCLUDED.missing_1,
                     missing_2 = EXCLUDED.missing_2,
                     complete = EXCLUDED.complete,
@@ -449,9 +466,15 @@ class CloudStorage:
         with self.engine.connect() as conn:
             cur = conn.execute(
                 text("""
-                    SELECT * FROM results
+                    SELECT
+                        session_id, "window", mode, missing_1, missing_2, complete,
+                        mean_s1c1, mean_s1c2, mean_s1c3, mean_s2c1, mean_s2c2,
+                        min_s1c1, min_s1c2, min_s1c3, min_s2c1, min_s2c2,
+                        max_s1c1, max_s1c2, max_s1c3, max_s2c1, max_s2c2,
+                        magnitude, heart_rate, processed_at
+                    FROM results
                     WHERE session_id = :sess
-                    ORDER BY window ASC, mode ASC
+                    ORDER BY "window" ASC, mode ASC
                 """),
                 {"sess": session_id},
             )

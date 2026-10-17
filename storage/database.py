@@ -209,7 +209,7 @@ class DeviceDatabase:
             conn.execute(
                 """
                 INSERT INTO results (
-                    session_id, window, mode, missing_1, missing_2, complete,
+                    session_id, "window", mode, missing_1, missing_2, complete,
                     mean_s1c1, mean_s1c2, mean_s1c3, mean_s2c1, mean_s2c2,
                     min_s1c1, min_s1c2, min_s1c3, min_s2c1, min_s2c2,
                     max_s1c1, max_s1c2, max_s1c3, max_s2c1, max_s2c2,
@@ -221,7 +221,8 @@ class DeviceDatabase:
                     ?, ?, ?, ?, ?,
                     ?, ?, ?
                 )
-                ON CONFLICT(session_id, window, mode) DO UPDATE SET
+                ON CONFLICT(session_id, "window", mode) DO UPDATE SET
+                    "window"=excluded."window",
                     missing_1=excluded.missing_1,
                     missing_2=excluded.missing_2,
                     complete=excluded.complete,
@@ -388,9 +389,15 @@ class DeviceDatabase:
         try:
             rows = conn.execute(
                 """
-                SELECT * FROM results
+                SELECT
+                    session_id, "window", mode, missing_1, missing_2, complete,
+                    mean_s1c1, mean_s1c2, mean_s1c3, mean_s2c1, mean_s2c2,
+                    min_s1c1, min_s1c2, min_s1c3, min_s2c1, min_s2c2,
+                    max_s1c1, max_s1c2, max_s1c3, max_s2c1, max_s2c2,
+                    magnitude, heart_rate, processed_at
+                FROM results
                 WHERE session_id=? AND mode='offline'
-                ORDER BY window ASC
+                ORDER BY "window" ASC
                 LIMIT ?
                 """,
                 (session_id, limit),
@@ -555,9 +562,15 @@ class DeviceDatabase:
         try:
             cur = conn.execute(
                 """
-                SELECT * FROM results
+                SELECT
+                    session_id, "window", mode, missing_1, missing_2, complete,
+                    mean_s1c1, mean_s1c2, mean_s1c3, mean_s2c1, mean_s2c2,
+                    min_s1c1, min_s1c2, min_s1c3, min_s2c1, min_s2c2,
+                    max_s1c1, max_s1c2, max_s1c3, max_s2c1, max_s2c2,
+                    magnitude, heart_rate, processed_at
+                FROM results
                 WHERE session_id=?
-                ORDER BY window ASC, mode ASC
+                ORDER BY "window" ASC, mode ASC
                 """,
                 (session_id,),
             )
