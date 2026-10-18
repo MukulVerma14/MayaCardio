@@ -186,7 +186,7 @@ class CloudStorage:
             """))
 
             # Indexes
-            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_samples_export ON samples (session_id, sensor, idx);"))
+            conn.execute(text("DROP INDEX IF EXISTS idx_samples_export;"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS idx_losses_export ON losses (session_id, sensor, from_idx);"))
             conn.execute(text('CREATE INDEX IF NOT EXISTS idx_results_lookup ON results (session_id, "window", mode);'))
 
@@ -422,12 +422,25 @@ class CloudStorage:
             total_windows = conn.execute(text("SELECT COUNT(*) FROM results")).scalar() or 0
             sessions_res = conn.execute(text("SELECT DISTINCT session_id FROM samples")).fetchall()
             sessions = [r[0] for r in sessions_res]
-            return {
+            status_data: Dict[str, Any] = {
                 "backend": "postgresql" if self.is_postgres else "sqlite",
                 "sessions": sessions,
                 "total_samples": total_samples,
                 "processed_windows": total_windows,
             }
+            if self.is_postgres:
+                try:
+                    total_bytes = conn.execute(text("SELECT pg_total_relation_size('samples')")).scalar() or 0
+                    table_bytes = conn.execute(text("SELECT pg_relation_size('samples')")).scalar() or 0
+                    indexes_bytes = conn.execute(text("SELECT pg_indexes_size('samples')")).scalar() or 0
+                    status_data["samples_bytes_total"] = total_bytes
+                    status_data["samples_bytes_table"] = table_bytes
+                    status_data["samples_bytes_indexes"] = indexes_bytes
+                    if total_samples > 0:
+                        status_data["bytes_per_sample"] = total_bytes / total_samples
+                except Exception as e:
+                    status_data["size_error"] = str(e)
+            return status_data
 
     def verify_session(self, session_id: str) -> Dict[str, Any]:
         with self.engine.connect() as conn:

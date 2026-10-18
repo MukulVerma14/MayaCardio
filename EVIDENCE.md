@@ -78,14 +78,12 @@ Exported session `2ae483f8` from device and cloud via `pipeline export`:
   - **Idle Heartbeat Latency** ($n=8$): min=922.0ms, avg=**1,816.3ms**, max=4,234.0ms.
   - **Active Ingest Heartbeat Latency** ($n=15$): min=1,047.0ms, avg=**3,274.9ms**, max=5,000.0ms.
   - **Probes $\ge 1,500$ms During Ingest**: **8/15 (53.3%)**.
-- **Confirmed Root Cause**:
-  1. In `cloud/server.py`, `/api/v1/ingest` was defined as an `async def` route executing synchronous, blocking SQLAlchemy/Neon transactions on the single-worker main asyncio event loop. This froze event loop handling for incoming `/api/v1/heartbeat` probes for 800–1,400ms per batch.
-  2. In Python `requests`, scalar `timeout=1.5` applies separately to connect (up to 1.5s) AND read (up to 1.5s), allowing total elapsed time to reach up to 3.0s before raising `Timeout`.
-- **Fixes Applied & Fast-Outage Verification**:
-  - `cloud/server.py`: Offloaded `cloud_storage.ingest_batch` to a worker thread using `await anyio.to_thread.run_sync(...)`.
-  - `connectivity/monitor.py`: Set explicit `timeout=(1.0, 1.5)`. Capped suppression window to 2.0s; timeout suppression does not increment success count; and when an upload fails, `notify_traffic_failure()` immediately invalidates `last_successful_traffic_time`.
-  - `uploader/client.py`: Added 50ms pacing between backlog batches and called `conn_monitor.notify_successful_traffic()` on batch success and `conn_monitor.notify_traffic_failure()` on upload error.
-  - **Fast-Outage Verification**: Re-tested `scripts/test_network_switch.py` with an active-upload network cut variant. Measured offline switch time was **6.11 seconds** during active uploads (and **7.59 seconds** during idle), verifying that mode switching strictly satisfies the $\le 10$ second requirement in all operational states.
+- **Observations & Mitigations Investigated**:
+  1. In `cloud/server.py`, `/api/v1/ingest` was offloaded to worker threads using `await anyio.to_thread.run_sync(...)` to prevent blocking the single-worker main asyncio event loop.
+  2. In `connectivity/monitor.py`, timeouts were explicitly set to `(1.0, 1.5)`, timeout suppression was capped to 2.0s without resetting failure progress, and upload traffic failure notifications were added.
+  3. In `uploader/client.py`, 50ms batch pacing was added.
+  4. **Empirical Flapping Benchmark**: In a 587 s benchmark run (`scripts/run_flapping_benchmark.py`) against active cloud ingestion (578,300 samples uploaded, 100% HTTP 200 ingest), **no mode switches observed in a 587 s run against successful ingest (about 10 minutes); the original flapping lasted 22+ minutes; 15% of probes during uploads still exceeded 2 s; cause of the residual spikes not established.**
+  - **Fast-Outage Verification**: Re-tested `scripts/test_network_switch.py` with an active-upload network cut variant. Measured offline switch time was **6.11 seconds** during active uploads (and **7.59 seconds** during idle), verifying mode switching takes about 6-8 s in locally simulated network cuts.
 
 ### 3.3 Verification of Session `167e65b1` & Silent Gap Investigation
 
@@ -103,7 +101,7 @@ Exported session `2ae483f8` from device and cloud via `pipeline export`:
   - Sensor 2: min `0`, max `1,439,999` (1,335,256 samples saved).
 
 #### 2. Cloud Completeness Verification:
-Verified against live cloud deployment using `/api/v1/session_verify?session_id=167e65b1` and paginated export:
+Verified against live cloud deployment using `/api/v1/session_verify?session_id=167e65b1` and paginated export (measured on 17 Oct 2026 before the cloud tables were emptied; not reproducible now):
 - **Total Samples in Cloud**: `1,911,275` (exact 1:1 match with device).
 - **Sensor 1**: count `576,019`, min `759,337`, max `1,439,999`, unique `576,019`, duplicates `0`.
 - **Sensor 2**: count `1,335,256`, min `0`, max `1,439,999`, unique `1,335,256`, duplicates `0`.
@@ -153,9 +151,10 @@ Measured against live deployment `https://mayacardio-z481.onrender.com`:
 ## 4. Disclosures & Known Limitations
 
 In strict adherence to reporting integrity:
-- **Flapping**: Root cause identified as server-side event loop starvation by synchronous DB execution in `/api/v1/ingest` and connect/read timeout splitting in requests; offloaded to worker threads and patched monitor timeouts with traffic failure awareness.
+- **Flapping**: No mode switches observed in a 587 s run against successful ingest (about 10 minutes); the original flapping lasted 22+ minutes; 15% of probes during uploads still exceeded 2 s; cause of the residual spikes not established.
+- **Compact Cloud Storage Estimates**: Chunked storage estimates (~6-8 bytes/sample, 22-28 hours in 0.5 GB) are unmeasured estimates.
 - **Render Catch-Up Throughput**: Public internet upload throughput is ~1,700 samples/s (sequential) to ~2,500 samples/s (parallel). Catching up 2 hours requires ~38 to 57 minutes, failing the 15-minute SLA (known limitation).
-- **No Zero Sample Loss Claim**: The pipeline does NOT claim zero sample loss overall. Samples discarded by mock buffer overflows, initial unread gaps before daemon connection, or mock session restarts are lost and explicitly recorded with exact bounds and reasons in the `losses` table. Received data has zero silent loss.
+- **No Zero Sample Loss Claim**: The pipeline does NOT claim zero sample loss overall. Samples discarded by mock buffer overflows, initial unread gaps before daemon connection, or mock session restarts are lost and explicitly recorded with exact bounds and reasons in the `losses` table. Samples received by the device are written to SQLite WAL before read cursors advance.
 - **Test Platform**: Automated test runs were executed on **Windows 10/11 x86_64 with Python 3.12.3**. Execution on a physical ARM64 Linux board has **NOT BEEN RUN**.
 - **Physical Power Pull**: Tested as an abrupt operating system process kill (`kill -9`). A physical hardware AC power pull on real hardware has **NOT BEEN RUN**.
 - **Continuous 2-Hour Outage Run**: Full continuous 2-hour accumulation (5.76M samples) was **NOT RUN**; catch-up rates were measured over 130,000-sample and 50,000-sample backlogs.

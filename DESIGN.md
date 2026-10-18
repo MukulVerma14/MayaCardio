@@ -106,18 +106,18 @@ flowchart TD
 
 ---
 
-## 3. What is Guaranteed and What is NOT
+## 3. System Properties & Invariants
 
-### Guaranteed:
-1. **Zero Silent Loss of Received Data**: Every sample received by the device is safely committed to local disk before acknowledging the read cursor `[MEASURED]`.
+### Verified Invariants:
+1. **Atomic Persistence Before Cursor Advance**: Every sample received by the device is safely committed to local disk before acknowledging the read cursor `[MEASURED]`.
 2. **Honest Loss Accounting**: Every gap caused by buffer overflow, daemon termination, network delay, mock restart, or initial unread data is explicitly logged with exact index ranges and reasons in `losses` `[MEASURED]`.
 3. **Exact Mathematical Parity**: Offline results computed on the device and online results computed in the cloud are byte-identical for identical inputs `[MEASURED via test_parity_property.py]`.
 4. **Crash & Kill Resumption**: Hard process termination (`kill -9`) causes zero duplicate entries and zero DB corruption; the daemon resumes from stored cursors `[MEASURED via test_kill_daemon.py]`.
-5. **Deterministic Mode Switching**: Network cuts switch to offline in **7.59s** (idle) / **6.11s** (active uploads); restores switch to online in **3.03s** `[MEASURED via local-simulated test_network_switch.py]`.
+5. **Deterministic Mode Switching**: Network cuts switch to offline in **about 6–8 s** (6.11s active uploads, 7.59s idle in locally simulated network cuts); restores switch to online in **3.03s** `[MEASURED via test_network_switch.py]`.
 6. **Clock Jump Immunity**: All timers, polling loops, and window indices use `time.monotonic()` and integer sample index arithmetic, immune to system clock jumps `[MEASURED via test_clock_jump.py]`.
-7. **Cloud Data Integrity**: PostgreSQL primary key `(session_id, sensor, idx)` guarantees zero duplicates in cloud storage `[MEASURED]`.
+7. **Cloud Uniqueness Enforcement**: PostgreSQL primary key `(session_id, sensor, idx)` enforces zero duplicate rows in cloud storage `[MEASURED]`.
 
-### NOT Guaranteed:
+### Explicit Non-Guarantees:
 1. **Zero Sample Loss Overall**: Samples discarded by mock ring buffer overflow, mock session restarts, or startup delay before daemon attachment are lost; they are explicitly tracked in the `losses` table.
 2. **Conflicting Samples from External Sources**: If an external caller injects conflicting values for an already recorded `(session_id, sensor, idx)`, the conflicting sample is rejected and discarded to preserve data integrity `[MEASURED via test_fault_proxy.py]`.
 3. **15-Minute 2-Hour Catch-Up on Free Cloud Deployments**: While localhost achieves 12,455 samples/s (~7.7 min projected), the public internet connection to Render free tier achieves ~1,700 to 2,500 samples/s (~38 to 57 minutes projected), exceeding the 15-minute target (known limitation).
@@ -156,8 +156,14 @@ flowchart TD
 5. **1-Hour Continuous Resource Run**: Resource profiling ran for 10 seconds on x86_64; a full 3600-second continuous benchmark on ARM64 was `[NOT RUN]`.
 6. **Keepalive Effectiveness Unproven**: The 2.0s heartbeat probe is an architectural design intent to prevent spin-down during active monitoring; its long-term multi-hour effectiveness on Render free tier was not tested.
 7. **Cloud Storage Capacity & Schema Design Limit (Neon Free Tier 0.5 GB)**:
-   - **Measured Row Overhead**: In PostgreSQL, each sample row in `samples` incurs ~60 bytes of heap tuple overhead (24B header + 4B line pointer + 32B payload for `session_id VARCHAR(64)`, `sensor INT`, `idx INT`, `ch0 INT`, `ch1 INT`, `ch2 INT`). In addition, the primary key B-tree index `(session_id, sensor, idx)` incurs ~34 bytes/row, and the secondary index `idx_samples_export` incurs ~34 bytes/row. Accounting for 8KB page alignment and fillfactor (~10% free space), total storage is **~130 bytes per sample row** (table + indexes).
+   - **Index Optimization & Redundant Index Drop**: The redundant index `idx_samples_export` on `(session_id, sensor, idx)` in `cloud/storage.py` was dropped via migration `DROP INDEX IF EXISTS idx_samples_export;` for both SQLite and PostgreSQL creation paths, as `PRIMARY KEY (session_id, sensor, idx)` already provides identical index coverage.
+   - **Measured Row Overhead**:
+     - *SQLite*: Measured on-disk relation size before dropping `idx_samples_export` was **96.50 bytes/row** (9,650,176 bytes for 100,000 samples). After dropping `idx_samples_export`, measured size was **66.72 bytes/row** (6,672,384 bytes for 100,000 samples), saving **29.78 bytes/row (30.9% reduction)**.
+     - *PostgreSQL*: Heap tuple overhead is ~60 bytes (24B header + 4B line pointer + 32B payload). Primary key B-tree index `(session_id, sensor, idx)` incurs ~34 bytes/row. Dropping `idx_samples_export` eliminated the duplicate ~34 bytes/row secondary B-tree index, reducing per-row storage from ~130 bytes to **~96–100 bytes per sample row** (saving ~34 bytes/row, ~25% reduction).
    - **Data Generation Rate**: Dual sensors sampled at 400 Hz generate $2 \times 400 = 800\text{ samples/s}$, or $2,880,000\text{ samples/hour}$.
-   - **Hourly Storage Footprint**: $2,880,000 \times 130\text{ bytes} \approx 374.4\text{ MB/hour}$ ($0.374\text{ GB/hour}$).
-   - **Free-Tier 0.5 GB Capacity Limit**: Neon's 0.5 GB (500 MB) free tier accommodates only $\frac{500\text{ MB}}{374.4\text{ MB/hour}} \approx 1.335\text{ hours}$ (~**1 hour 20 minutes**) of continuous recording in this normalized schema before exhausting storage quota and throwing HTTP 500 disk write errors.
-   - **Compact Cloud Storage Evaluation**: A chunked storage design (1 row per `(session_id, sensor, second)` holding 400 samples in a binary bytea or array) reduces per-sample overhead from 130 bytes to ~6-8 bytes, fitting 22-28 hours in 0.5 GB. To preserve strict device/cloud parity and keep all verified SQLite/PostgreSQL tests green without schema drift, the normalized schema is retained and this hard capacity limit is documented as an architectural boundary.
+   - **Recomputed Hourly Footprint**:
+     - In PostgreSQL at ~96 bytes/row: $2,880,000 \times 96\text{ bytes} \approx 276.5\text{ MB/hour}$ ($0.276\text{ GB/hour}$).
+     - In SQLite at 66.72 bytes/row: $2,880,000 \times 66.72\text{ bytes} \approx 192.15\text{ MB/hour}$ ($0.192\text{ GB/hour}$).
+   - **Free-Tier 0.5 GB Capacity Limit**: Neon's 0.5 GB (500 MB) free tier accommodates $\frac{500\text{ MB}}{276.5\text{ MB/hour}} \approx \mathbf{1.81\text{ hours}}$ (~**1 hour 49 minutes**) of continuous recording in PostgreSQL (up from 1.33 hours before dropping the redundant index). At 100 bytes/row, capacity is $\approx \mathbf{1.74\text{ hours}}$ (~**1 hour 44 minutes**). (In SQLite: $\approx \mathbf{2.60\text{ hours}}$).
+   - **Compact Cloud Storage Evaluation [UNMEASURED ESTIMATE]**: A chunked storage design (1 row per `(session_id, sensor, second)` holding 400 samples in a binary bytea or array) is an unmeasured estimate of ~6–8 bytes/sample fitting 22–28 hours in 0.5 GB. To preserve strict device/cloud parity and keep all verified SQLite/PostgreSQL tests green without schema drift, the normalized schema is retained and this hard capacity limit is documented as an architectural boundary.
+8. **Connectivity Monitor Mode Flapping Under Ingest**: No mode switches observed in a 587 s run against successful ingest (about 10 minutes); the original flapping lasted 22+ minutes; 15% of probes during uploads still exceeded 2 s; cause of the residual spikes not established.
