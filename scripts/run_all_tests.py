@@ -24,7 +24,7 @@ SCRIPTS = [
 
 def main() -> None:
     print("=================================================================")
-    print("       BEDSIDE BIOSIGNAL PIPELINE - COMPREHENSIVE TEST SUITE           ")
+    print("       BEDSIDE BIOSIGNAL PIPELINE - COMPREHENSIVE TEST SUITE     ")
     print("=================================================================\n")
 
     scripts_dir = Path(__file__).resolve().parent
@@ -54,10 +54,10 @@ def main() -> None:
     print("=================================================================")
 
     if all_passed:
-        print("ALL TESTS PASSED SUCCESSFULLY! Submission criteria satisfied.")
+        print("ALL TESTS PASSED SUCCESSFULLY.")
         sys.exit(0)
     else:
-        print("SOME TESTS FAILED! Review logs above.")
+        print("SOME TESTS FAILED. Review logs above.")
         sys.exit(1)
 
 

@@ -117,6 +117,10 @@ The cloud backend is deployed on **Render.com** (Free Web Service) backed by **N
    - *Symptoms*: Running `pipeline export --session 167e65b1 --from cloud` returned `HTTP 502 Bad Gateway`.
    - *Root Cause*: Streaming 1.9M samples over a single HTTP connection required multi-minute external sorting and streaming across 4.8M table rows, exceeding Render free-tier memory and proxy timeout limits.
    - *Fix*: Updated `cli.py` and `cloud/server.py` to support range-based pagination (50,000 index windows), allowing multi-million sample sessions to export reliably.
+8. **Neon Free-Tier Storage Exhaustion & HTTP 500 Ingest Errors**:
+   - *Symptoms*: After accumulating 5.66 million samples across multiple test runs, `/api/v1/ingest` began returning `HTTP 500 Internal Server Error` on any new row insertions, while read endpoints (`/api/v1/status`) and duplicate `ON CONFLICT DO NOTHING` inserts continued returning `HTTP 200`.
+   - *Root Cause*: In Neon serverless PostgreSQL, the free-tier storage limit is 0.5 GB (500 MB). At ~130 bytes per sample row (including table heap tuple and two B-tree indexes), 5.66 million unvacuumed samples occupied ~736 MB, exceeding Neon's storage quota and putting the database into read-only mode for inserts.
+   - *Fix & Mitigation*: Tables were emptied and vacuumed to reclaim storage space. Confirmed via API that `/api/v1/ingest` returns HTTP 200 for new sessions. Documented the storage capacity design limit in `DESIGN.md` under Known Limitations (~1.3 hours of two-sensor 400 Hz recording per 0.5 GB).
 
 ---
 
@@ -128,7 +132,8 @@ The cloud backend is deployed on **Render.com** (Free Web Service) backed by **N
 4. **Full 2-Hour Continuous Catch-Up**: Sustained throughput of 12,455.7 samples/s was empirically verified on a 130,000-sample backlog; full 2-hour accumulation (5.76M samples) was `[NOT RUN]`.
 5. **1-Hour Continuous Resource Run**: Resource profiling ran for 10 seconds on x86_64; a full 3600-second continuous benchmark on ARM64 was `[NOT RUN]`.
 6. **Keepalive Effectiveness Unproven**: The 2.0s heartbeat probe is an architectural design intent to prevent spin-down during active monitoring; its long-term multi-hour effectiveness on Render free tier was not tested.
-7. **No Claim of Zero Sample Loss Overall**: Samples discarded by mock ring buffer overflow, mock session restarts, or startup delay before daemon connection are lost and explicitly recorded with exact bounds and reasons in the `losses` table. Received data has zero silent loss.
+7. **Cloud Storage Limit (Neon Free Tier 0.5 GB)**: In the normalized per-sample schema (~130 bytes/sample with indexes), 0.5 GB accommodates ~1.3 hours of continuous dual-sensor 400 Hz data before storage exhaustion. Documented in `DESIGN.md`.
+8. **No Claim of Zero Sample Loss Overall**: Samples discarded by mock ring buffer overflow, mock session restarts, or startup delay before daemon connection are lost and explicitly recorded with exact bounds and reasons in the `losses` table. Received data has zero silent loss.
 
 ---
 
