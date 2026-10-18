@@ -5,8 +5,9 @@ Verifies:
 2. Network loss detected and mode switched to OFFLINE within 10 s (target < 10 s).
 3. Continuous collection and offline window processing on the device during outage.
 4. Network restored and mode switched back to ONLINE within 10 s (target < 10 s).
-5. No sample lost or duplicated because of the switch.
-6. Complete cloud catch-up after reconnection.
+5. Active-upload network cut variant switches to OFFLINE within 10 s.
+6. No sample lost or duplicated because of the switch.
+7. Complete cloud catch-up after reconnection.
 """
 
 from __future__ import annotations
@@ -102,7 +103,7 @@ def main() -> None:
         print(f"[+] Initial pipeline mode: {initial_mode}")
         assert initial_mode == "online", f"Expected online mode, got {initial_mode}"
 
-        # Step 4: Inject Network Cut by terminating cloud service
+        # Step 4: Inject Network Cut by terminating cloud service (idle/live streaming)
         print("[!] CUTTING NETWORK TO CLOUD...")
         t_cut = time.monotonic()
         stop_cloud(cloud_proc)
@@ -154,14 +155,34 @@ def main() -> None:
         assert switched_to_online, "Failed to switch back to ONLINE mode within 12 seconds!"
         assert time_to_online < 10.0, f"Online switch took {time_to_online:.2f}s (required < 10s)"
 
-        # Step 6: Wait for catch-up
+        # Step 6: Wait for partial catch-up
         print("[+] Waiting for backlog catch-up...")
         time.sleep(4.0)
 
         status = db.get_status()
         print(f"[+] Current Status: {status}")
-        # Live incoming data arrives continuously, so backlog under 800 samples represents <= 1.0s of live data
         assert status["backlog"] <= 800, f"Backlog did not catch up: {status['backlog']}"
+
+        # Step 7: Active-Upload Network Cut Variant
+        print("[!] Testing active-upload network cut variant...")
+        time.sleep(1.0)
+        print("[!] CUTTING NETWORK DURING ACTIVE UPLOADS...")
+        t_cut_active = time.monotonic()
+        stop_cloud(cloud_proc)
+
+        switched_to_offline_active = False
+        time_to_offline_active = 0.0
+        while time.monotonic() - t_cut_active < 12.0:
+            mode = db.get_mode()
+            if mode == "offline":
+                time_to_offline_active = time.monotonic() - t_cut_active
+                switched_to_offline_active = True
+                break
+            time.sleep(0.3)
+
+        print(f"[+] Switched to OFFLINE mode during active uploads in {time_to_offline_active:.2f} seconds")
+        assert switched_to_offline_active, "Failed to switch to OFFLINE mode during active uploads within 12 seconds!"
+        assert time_to_offline_active < 10.0, f"Active upload offline switch took {time_to_offline_active:.2f}s (required < 10s)"
 
         # Verify duplicate check in DB
         conn = db._get_connection()

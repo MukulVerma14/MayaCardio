@@ -48,7 +48,7 @@ python pipeline status
 python scripts/test_network_switch.py
 ```
 2. Watch daemon logs:
-   - Within **6.06 seconds** (measured in local-simulated test), see: `[INFO] connectivity.monitor: Mode switch triggered: online -> offline`.
+   - Within **7.59 seconds** (idle) and **6.11 seconds** (active backlog uploads) (measured in local-simulated test), see: `[INFO] connectivity.monitor: Mode switch triggered: online -> offline`.
 3. In Terminal 3, run:
 ```powershell
 python pipeline status
@@ -62,7 +62,7 @@ python pipeline results --session <SESSION_ID>
 
 5. Restore connectivity (or end network simulation).
 6. Watch daemon logs:
-   - Within **4.55 seconds** (measured in local-simulated test), see: `[INFO] connectivity.monitor: Mode switch triggered: offline -> online`.
+   - Within **3.03 seconds** (measured in local-simulated test), see: `[INFO] connectivity.monitor: Mode switch triggered: offline -> online`.
    - On localhost, backlog drains at **~12,455 samples/s** (measured).
    - On deployed Render over the public internet, backlog drains at **~1,689 samples/s** (sequential) to **~2,534 samples/s** (parallel) (measured).
 7. Run `python pipeline status` to show `backlog: 0`.
@@ -120,8 +120,8 @@ $env:CLOUD_URL = "https://mayacardio-z481.onrender.com"
 python pipeline export --session <SESSION_ID> --from device
 ```
 2. Summarize:
-   - All received samples persisted to SQLite WAL on device.
+   - All received samples persisted to SQLite WAL on device (zero silent loss of received data).
    - Honest loss accounting: buffer overflows and gaps explicitly tracked with exact bounds.
-   - 6.06s offline switch / 4.55s online restore (measured in local-simulated tests).
+   - 7.59s offline switch (idle) / 6.11s (active uploads) / 3.03s online restore (measured in local-simulated tests).
    - Zero duplicates by primary key `(session_id, sensor, idx)` in SQLite and PostgreSQL.
    - Exact mathematical parity between device offline and cloud online window metrics.

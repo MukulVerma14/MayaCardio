@@ -69,6 +69,7 @@ flowchart TD
   - When a session ID transition is detected, cursors reset immediately to 0. Unread data from the previous session is finalized as `LossRecord(to_index=null, reason="mock_restart_session_change")`.
   - If a sensor's initial read in a session starts with `first_index > 0`, the reader records `LossRecord(sensor, 0, first_index - 1, reason="not_read_before_pipeline_start")`.
   - Buffer overflow losses detected by the mock (`loss,from_idx,to_idx,reason`) are committed to SQLite.
+  - *Historical Session 167e65b1*: In session `167e65b1`, Sensor 1 had no samples and no loss record for indices `0..759,336` because stale cursors from an earlier session were dispatched before mock session confirmation. In strict accordance with reporting integrity, old historical database rows and logs were left completely unmodified; the fix ensures no future runs encounter this issue.
 - **Zero Cloud Coupling**: The reader never makes network calls to the cloud and cannot be blocked by cloud latency or network disconnects.
 
 ### 2.2 Durable Local Storage ([`storage/`](storage/))
@@ -86,14 +87,14 @@ flowchart TD
 ### 2.4 Connectivity Monitor & Mode Switching ([`connectivity/`](connectivity/))
 - Probes `/api/v1/heartbeat` every 2.0s using monotonic clock intervals.
 - **Explicit Timeout Definition**: Uses tuple `timeout=(1.0, 1.5)` (1.0s connect, 1.5s read) to prevent Python requests from accumulating up to 3.0s total elapsed time before timing out.
-- **Traffic Awareness**: Monitors `last_successful_traffic_time`. If active uploader traffic succeeded within the preceding 4.0s, isolated probe timeouts are suppressed to prevent false flapping during heavy backlog uploads.
-- **Hysteresis**: 3 consecutive failed probes switch mode to `offline` (measured: **6.06s** in local-simulated test); 2 consecutive successes switch mode to `online` (measured: **4.55s** in local-simulated test). Both are well within the $\le 10\text{s}$ requirement. Mode state is persisted to SQLite.
+- **Fast-Outage Awareness**: Capped timeout suppression to 2.0s during active backlog uploads without treating timeouts as successes. When an upload fails, `notify_traffic_failure()` immediately invalidates recent traffic, allowing active-upload network cuts to switch offline in **6.11 seconds** `[MEASURED]`.
+- **Hysteresis**: 3 consecutive failed probes switch mode to `offline` (measured: **7.59s** idle, **6.11s** active uploads); 2 consecutive successes switch mode to `online` (measured: **3.03s**). Both are well within the $\le 10\text{s}$ requirement. Mode state is persisted to SQLite.
 
 ### 2.5 Dual-Channel Uploader & Catch-Up ([`uploader/`](uploader/))
 - **Prioritization**: When online, live batches are transmitted every 0.5s to ensure results appear in the cloud within 5s (measured P95 latency: **~1.1s** on localhost).
 - **Throughput & Backlog Drain**: Backlog is uploaded in batches of up to 2,500 samples with Gzip compression and 50ms inter-batch pacing to avoid starving the remote event loop.
-  - **Localhost**: Sustained throughput of **12,455.7 samples/s** `[MEASURED]`, allowing a 2-hour outage (5.76M samples) to drain in **~7.7 minutes** (requirement met on localhost).
-  - **Deployed Render (Public Internet)**: Upload throughput measured at **1,688.6 samples/s** (sequential, 1 worker) to **2,533.7 samples/s** (parallel, 4 workers) `[MEASURED]`. Catching up a 2-hour backlog over the public internet requires projected **~37.9 to 56.9 minutes**, which does **NOT** meet the 15-minute requirement on this deployment.
+  - **Localhost**: Sustained throughput of **12,455.7 samples/s** `[MEASURED]`, allowing a 2-hour outage (5.76M samples) to drain in projected **~7.7 minutes** (`[PROJECTED from localhost rate]`).
+  - **Deployed Render (Public Internet)**: Upload throughput measured at **1,688.6 samples/s** (sequential, 1 worker) to **2,533.7 samples/s** (parallel, 4 workers) `[MEASURED]`. Catching up a 2-hour backlog over the public internet requires projected **~37.9 to 56.9 minutes**, which does **NOT** meet the 15-minute requirement on this deployment (documented as a known limitation).
 - **Ack-Based Advancing**: Device cursors advance only upon receiving explicit acknowledgement from the cloud ingestion endpoint.
 
 ### 2.6 Cloud Tier Architecture (Render + Neon PostgreSQL)
@@ -109,17 +110,17 @@ flowchart TD
 
 ### Guaranteed:
 1. **Zero Silent Loss of Received Data**: Every sample received by the device is safely committed to local disk before acknowledging the read cursor `[MEASURED]`.
-2. **Honest Accounting**: Every gap caused by buffer overflow, daemon termination, network delay, mock restart, or initial unread data is explicitly logged with exact index ranges and reasons `[MEASURED]`.
+2. **Honest Loss Accounting**: Every gap caused by buffer overflow, daemon termination, network delay, mock restart, or initial unread data is explicitly logged with exact index ranges and reasons in `losses` `[MEASURED]`.
 3. **Exact Mathematical Parity**: Offline results computed on the device and online results computed in the cloud are byte-identical for identical inputs `[MEASURED via test_parity_property.py]`.
 4. **Crash & Kill Resumption**: Hard process termination (`kill -9`) causes zero duplicate entries and zero DB corruption; the daemon resumes from stored cursors `[MEASURED via test_kill_daemon.py]`.
-5. **Deterministic Mode Switching**: Network cuts switch to offline in $\le 6.1$ s; restores switch to online in $\le 4.6$ s `[MEASURED via local-simulated test_network_switch.py]`.
+5. **Deterministic Mode Switching**: Network cuts switch to offline in **7.59s** (idle) / **6.11s** (active uploads); restores switch to online in **3.03s** `[MEASURED via local-simulated test_network_switch.py]`.
 6. **Clock Jump Immunity**: All timers, polling loops, and window indices use `time.monotonic()` and integer sample index arithmetic, immune to system clock jumps `[MEASURED via test_clock_jump.py]`.
 7. **Cloud Data Integrity**: PostgreSQL primary key `(session_id, sensor, idx)` guarantees zero duplicates in cloud storage `[MEASURED]`.
 
 ### NOT Guaranteed:
-1. **Data Discarded by the Mock Prior to Read**: If the pipeline is stopped longer than the mock's 10-second internal ring buffer (4,000 samples), data purged by the mock cannot be recovered; it is accurately recorded as lost with `buffer_overflow` or `not_read_before_pipeline_start`.
+1. **Zero Sample Loss Overall**: Samples discarded by mock ring buffer overflow, mock session restarts, or startup delay before daemon attachment are lost; they are explicitly tracked in the `losses` table.
 2. **Conflicting Samples from External Sources**: If an external caller injects conflicting values for an already recorded `(session_id, sensor, idx)`, the conflicting sample is rejected and discarded to preserve data integrity `[MEASURED via test_fault_proxy.py]`.
-3. **15-Minute 2-Hour Catch-Up on Free Cloud Deployments**: While localhost achieves 12,455 samples/s (~7.7 min), the public internet connection to Render free tier achieves ~1,689 to 2,534 samples/s (~38 to 57 minutes), exceeding the 15-minute target.
+3. **15-Minute 2-Hour Catch-Up on Free Cloud Deployments**: While localhost achieves 12,455 samples/s (~7.7 min projected), the public internet connection to Render free tier achieves ~1,700 to 2,500 samples/s (~38 to 57 minutes projected), exceeding the 15-minute target (known limitation).
 
 ---
 
@@ -148,7 +149,7 @@ flowchart TD
 
 ## 6. Known Limitations
 
-1. **Render Catch-Up Throughput Limitation**: Public internet upload throughput to free-tier Render is ~1,689 samples/s (sequential) to ~2,534 samples/s (parallel). Catching up a 2-hour backlog (5.76M samples) over this deployment requires ~38 to 57 minutes, failing the 15-minute SLA that localhost satisfies (~7.7 min).
+1. **Render Catch-Up Throughput Limitation**: Public internet upload throughput to free-tier Render is ~1,700 samples/s (sequential) to ~2,500 samples/s (parallel). Catching up a 2-hour backlog (5.76M samples) over this deployment requires projected ~38 to 57 minutes, failing the 15-minute SLA that localhost satisfies (~7.7 min projected from localhost rate).
 2. **Render Free-Tier Cold Starts**: Free instances on Render spin down after 15 minutes of inactivity; waking up an instance requires ~50 seconds, triggering temporary offline mode switching until the cloud service responds.
 3. **Untested on Physical ARM64 Hardware**: All tests and runs were performed on Windows 10/11 x86_64; physical execution on a Raspberry Pi ARM64 board, systemd auto-start, and physical power cable pulls remain `[NOT RUN]`.
 4. **Full 2-Hour Continuous Catch-Up**: Sustained throughput of 12,455.7 samples/s was empirically verified on a 130,000-sample backlog; full 2-hour accumulation (5.76M samples) was `[NOT RUN]`.

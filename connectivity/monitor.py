@@ -57,6 +57,11 @@ class ConnectivityMonitor:
             if self.current_mode == "offline" and self.consecutive_successes >= 2:
                 self._transition_to("online")
 
+    def notify_traffic_failure(self) -> None:
+        """Called by uploader when an upload attempt fails (connection refused/timeout)."""
+        with self.lock:
+            self.last_successful_traffic_time = 0.0
+
     def start(self) -> None:
         self.running = True
         self.thread = threading.Thread(target=self._run_loop, name="conn-monitor", daemon=True)
@@ -108,10 +113,9 @@ class ConnectivityMonitor:
             rtt = time.monotonic() - t0
 
             with self.lock:
-                # If an ingest upload succeeded within the last 4.0s, the link is confirmed active;
-                # a simultaneous probe timeout is due to server worker queuing, not network loss.
-                link_recently_active = (time.monotonic() - self.last_successful_traffic_time) < 4.0
-                if success or link_recently_active:
+                # Cap suppression window to 2.0s; only suppress timeout when upload succeeded very recently
+                link_recently_active = (time.monotonic() - self.last_successful_traffic_time) < 2.0
+                if success:
                     self.consecutive_successes += 1
                     self.consecutive_failures = 0
                     logger.debug(
@@ -121,6 +125,13 @@ class ConnectivityMonitor:
 
                     if self.current_mode == "offline" and self.consecutive_successes >= 2:
                         self._transition_to("online")
+                elif link_recently_active and status_desc == "timeout":
+                    # Simultaneous probe timeout during active backlog upload;
+                    # do NOT count as a failure, but DO NOT count as a success either.
+                    logger.debug(
+                        f"Heartbeat probe: timeout suppressed (active upload in-flight), rtt={rtt*1000:.1f}ms, "
+                        f"mode={self.current_mode}"
+                    )
                 else:
                     self.consecutive_failures += 1
                     self.consecutive_successes = 0

@@ -77,6 +77,8 @@ class UploaderClient:
 
             except Exception as e:
                 logger.warning(f"Upload iteration error: {e}")
+                if hasattr(self.conn_monitor, "notify_traffic_failure"):
+                    self.conn_monitor.notify_traffic_failure()
                 time.sleep(0.5)
 
     def _upload_batch_step(self) -> int:
@@ -193,3 +195,5 @@ class UploaderClient:
             )
         except Exception as e:
             logger.warning(f"Failed to sync offline results: {e}")
+            if hasattr(self.conn_monitor, "notify_traffic_failure"):
+                self.conn_monitor.notify_traffic_failure()
