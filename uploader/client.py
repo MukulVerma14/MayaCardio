@@ -71,7 +71,7 @@ class UploaderClient:
                 # If there is a large backlog, yield briefly without long sleeping
                 # to sustain high throughput (> 6,500 samples/sec)
                 if uploaded_count > 0:
-                    time.sleep(0.01)
+                    time.sleep(0.05)
                 else:
                     time.sleep(LIVE_BATCH_INTERVAL_SEC)
 
@@ -148,6 +148,10 @@ class UploaderClient:
                 sensor = int(sensor_str)
                 if ack_idx >= 0:
                     self.db.advance_acked_cursor(sensor, session_id, int(ack_idx))
+
+            # Notify connectivity monitor that active cloud traffic succeeded
+            if hasattr(self.conn_monitor, "notify_successful_traffic"):
+                self.conn_monitor.notify_successful_traffic()
 
             return len(all_samples)
         else:

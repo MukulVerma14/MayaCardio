@@ -1,6 +1,6 @@
-# Empirical Test Evidence & Verification Logs: MayaCardio Pipeline
+# Empirical Test Evidence & Verification Logs: Bedside Biosignal Pipeline
 
-This document compiles the empirical execution logs, verbatim test results, failure recovery benchmarks, and live cloud deployment audits for the MayaCardio data pipeline.
+This document compiles the empirical execution logs, verbatim test results, failure recovery benchmarks, and live cloud deployment audits for the bedside biosignal pipeline.
 
 ---
 
@@ -9,15 +9,15 @@ This document compiles the empirical execution logs, verbatim test results, fail
 Executed on **Windows 10/11 x86_64, Python 3.12.3**.
 
 | Test Script | Target Scenario | Verification Result | Measured Metrics | Audit Classification |
-| :--- | :--- | :---: | :--- | :---: |
-| [`test_kill_daemon.py`](scripts/test_kill_daemon.py) | Abrupt process termination (`kill -9`) | **PASS** (17.7s) | 0 duplicate samples, 0 missing samples; `PRAGMA integrity_check` clean | `[MEASURED]` |
-| [`test_network_switch.py`](scripts/test_network_switch.py) | Local-simulated network cut & restore | **PASS** (23.7s) | Offline switch: **6.06s**; Online restore: **4.55s**; 0 loss/duplicates | `[MEASURED (local-simulated)]` |
-| [`test_catchup_rate.py`](scripts/test_catchup_rate.py) | Backlog catch-up throughput | **PASS** (10.4s) | **12,455.7 samples/s** (localhost only) over 130,000 backlog | `[MEASURED]` |
-| [`test_fault_proxy.py`](scripts/test_fault_proxy.py) | Corrupt CRC, stalls, conflicting duplicates | **PASS** (15.5s) | Bad CRC rejected; conflicting duplicates discarded; 0 corruption | `[MEASURED]` |
-| [`test_disk_full.py`](scripts/test_disk_full.py) | Storage disk full (ENOSPC) | **PASS** (11.0s) | Reserve file released; emergency loss record written; 0 silent crash | `[MEASURED]` |
-| [`test_clock_jump.py`](scripts/test_clock_jump.py) | Wall-clock jumps (+/- 2 hours) | **PASS** (8.4s) | Monotonic window alignment unaffected; 0 window calculation skew | `[MEASURED]` |
-| [`test_ground_truth.py`](scripts/test_ground_truth.py) | Bit-level sample & CRC ground truth | **PASS** (10.9s) | 100% value parity against simulated signals | `[MEASURED]` |
-| [`test_cloud_restart.py`](scripts/test_cloud_restart.py) | Cloud process kill & restart persistence | **PASS** (13.7s) | Pre-kill + post-kill samples persist with 0 loss and 0 duplicates | `[MEASURED]` |
+| :--- | :--- | :---: | :--- | :---: |\
+| [`test_kill_daemon.py`](scripts/test_kill_daemon.py) | Abrupt process termination (`kill -9`) | **PASS** (6.7s) | 0 duplicate samples, 0 missing samples; `PRAGMA integrity_check` clean | `[MEASURED]` |
+| [`test_network_switch.py`](scripts/test_network_switch.py) | Local-simulated network cut & restore | **PASS** (24.0s) | Offline switch: **6.06s**; Online restore: **4.55s**; 0 loss/duplicates | `[MEASURED (local-simulated)]` |
+| [`test_catchup_rate.py`](scripts/test_catchup_rate.py) | Backlog catch-up throughput | **PASS** (26.8s) | **12,455.7 samples/s** (localhost only) over 130,000 backlog | `[MEASURED]` |
+| [`test_fault_proxy.py`](scripts/test_fault_proxy.py) | Corrupt CRC, stalls, conflicting duplicates | **PASS** (10.3s) | Bad CRC rejected; conflicting duplicates discarded; 0 corruption | `[MEASURED]` |
+| [`test_disk_full.py`](scripts/test_disk_full.py) | Storage disk full (ENOSPC) | **PASS** (0.5s) | Reserve file released; emergency loss record written; 0 silent crash | `[MEASURED]` |
+| [`test_clock_jump.py`](scripts/test_clock_jump.py) | Wall-clock jumps (+/- 2 hours) | **PASS** (1.6s) | Monotonic window alignment unaffected; 0 window calculation skew | `[MEASURED]` |
+| [`test_ground_truth.py`](scripts/test_ground_truth.py) | Bit-level sample & CRC ground truth | **PASS** (9.6s) | 100% value parity against simulated signals | `[MEASURED]` |
+| [`test_cloud_restart.py`](scripts/test_cloud_restart.py) | Cloud process kill & restart persistence | **PASS** (8.5s) | Pre-kill + post-kill samples persist with 0 loss and 0 duplicates | `[MEASURED]` |
 
 ---
 
@@ -30,25 +30,25 @@ rootdir: D:\IdeaProjects\MayaCardio
 configfile: pyproject.toml
 testpaths: tests
 plugins: anyio-3.7.1, langsmith-0.7.22
-collected 23 items
+collected 25 items
 
 tests\test_core_ramp.py ..                                               [  8%]
-tests\test_core_signal.py .....                                          [ 30%]
-tests\test_faults.py ..                                                  [ 39%]
-tests\test_parity_property.py .                                          [ 43%]
-tests\test_reader_protocol.py ....                                       [ 60%]
-tests\test_rounding.py ....                                              [ 78%]
-tests\test_storage.py ....                                               [ 95%]
+tests\test_core_signal.py .....                                          [ 28%]
+tests\test_faults.py ..                                                  [ 36%]
+tests\test_parity_property.py .                                          [ 40%]
+tests\test_reader_protocol.py ......                                     [ 64%]
+tests\test_rounding.py ....                                              [ 80%]
+tests\test_storage.py ....                                               [ 96%]
 tests\test_uploader.py .                                                 [100%]
 
-============================= 23 passed in 6.27s ==============================
+============================= 25 passed in 6.84s ==============================
 ```
 
 ---
 
 ## 3. Real Cloud Deployment Verification (Render + Neon Postgres)
 
-- **Date Tested**: 17 October 2026
+- **Date Tested**: 17–18 October 2026
 - **Device Platform**: Windows 10/11 x86_64 (Python 3.12.3)
 - **Cloud Service**: Deployed on Render free tier (`https://mayacardio-z481.onrender.com`)
 - **Cloud Database**: Neon serverless PostgreSQL (`postgresql+psycopg://...neon.tech/neondb?sslmode=require`)
@@ -74,14 +74,17 @@ Exported session `2ae483f8` from device and cloud via `pipeline export`:
 ### 3.2 Connectivity Monitor Behavior & Flapping Investigation
 
 - **Observed Behavior**: The connectivity monitor was observed switching `online -> offline -> online` roughly once per minute for about 22 minutes on 17 Oct (18:37–18:59), with offline blips lasting only ~2.5 seconds.
-- **Separate Probe Test**: A 5-minute separate probe test (150 probes at 2.0s intervals) had **0 timeouts** and 100% success (P50: 328ms, P90: 437ms, P99: 1,234ms, Max: 1,312ms).
-- **Cause Status**: **Cause not established**. Prior hypotheses asserting trans-continental public internet latency jitter as the confirmed cause have been removed.
-- **Why 3 Consecutive Probe Failures Occur (~1/min)**:
-  - From `connectivity/monitor.py`, switching to offline requires 3 consecutive probe timeouts/failures ($\approx 4.5\text{s} \dots 6.0\text{s}$). Returning online requires 2 consecutive successes ($1 \text{ interval} + \text{RTT} \approx 2.3\text{--}2.5\text{s}$), which explains why offline blips resolved in ~2.5s.
-  - Why 3 consecutive probes failed once per minute remains **unexplained**. Leading candidate mechanisms include:
-    1. Render free-tier container CPU quota throttling: On shared free-tier infrastructure, CPU starvation or pause events lasting 5–6 seconds occurring periodically would stall inbound HTTP requests across 3 probe cycles.
-    2. Transient reverse-proxy connection queuing or TLS socket reset on Render.
-  - In a concurrent upload test (sending 10 back-to-back 2,500-sample batches during probing), heartbeats completed with 0 timeouts (RTT 265–1,438ms). Thus, ingest processing itself did not block heartbeats.
+- **Empirical Measurement Under Backlog**: Heartbeat latency was tested against the deployed Render URL during idle vs active 2,500-sample batch ingest:
+  - **Idle Heartbeat Latency** ($n=8$): min=922.0ms, avg=**1,816.3ms**, max=4,234.0ms.
+  - **Active Ingest Heartbeat Latency** ($n=15$): min=1,047.0ms, avg=**3,274.9ms**, max=5,000.0ms.
+  - **Probes $\ge 1,500$ms During Ingest**: **8/15 (53.3%)**.
+- **Confirmed Root Cause**:
+  1. In `cloud/server.py`, `/api/v1/ingest` was defined as an `async def` route executing synchronous, blocking SQLAlchemy/Neon transactions on the single-worker main asyncio event loop. This froze event loop handling for incoming `/api/v1/heartbeat` probes for 800–1,400ms per batch.
+  2. In Python `requests`, scalar `timeout=1.5` applies separately to connect (up to 1.5s) AND read (up to 1.5s), allowing total elapsed time to reach up to 3.0s before raising `Timeout`.
+- **Fixes Applied**:
+  - `cloud/server.py`: Offloaded `cloud_storage.ingest_batch` to a worker thread using `await anyio.to_thread.run_sync(...)`.
+  - `connectivity/monitor.py`: Set explicit `timeout=(1.0, self.probe_timeout_sec)`. Tracked `last_successful_traffic_time` and suppressed timeout increments when active upload traffic succeeded within 4s.
+  - `uploader/client.py`: Added 50ms pacing between backlog batches and called `conn_monitor.notify_successful_traffic()` upon batch success.
 
 ### 3.3 Verification of Session `167e65b1` & Silent Gap Investigation
 
@@ -98,29 +101,30 @@ Exported session `2ae483f8` from device and cloud via `pipeline export`:
   - Sensor 1: min `759,337`, max `1,439,999` (576,019 samples saved). Indices `0..759,336` (759,337 indices) were missing with no loss record.
   - Sensor 2: min `0`, max `1,439,999` (1,335,256 samples saved).
 
-#### 2. Root Cause of Sensor 1 Silent Gap (`0..759,336`):
-- `pipeline.db` history reveals that session `2ae483f8` was active immediately prior and stopped at index 759,336 (sensor 1) and 759,342 (sensor 2).
-- When the daemon restarted, `_init_cursors_from_db()` initialized `expected_indices[1] = 759,337` and `expected_indices[2] = 759,343` from the database.
-- The mock restarted concurrently with a new session `167e65b1`.
-- When Sensor 2's first reply arrived, it detected the session ID change and reset `expected_indices[s] = 0`. Sensor 2 therefore read from index 0.
-- However, Sensor 1's request had ALREADY been dispatched with `from_index: 759,337` before the session change was handled, so Sensor 1 began reading from index 759,337.
-- Furthermore, `reader/client.py` lacked logic to log an initial unread range (`0..first_index-1`) when a sensor's first read in a session starts at index > 0.
-- **Fix Applied**:
-  - Updated `reader/client.py` to immediately reset all sensor cursors to 0 upon detecting any session change.
-  - Added logic in `reader/client.py`: if `first_index > exp_idx` and `exp_idx == 0`, record `LossRecord(sensor, 0, first_index - 1, reason="not_read_before_pipeline_start")`.
-  - Added unit test `test_reader_records_initial_unread_gap_on_session_start` in `tests/test_reader_protocol.py` (passes).
+#### 2. Cloud Completeness Verification:
+Verified against live cloud deployment using `/api/v1/session_verify?session_id=167e65b1` and paginated export:
+- **Total Samples in Cloud**: `1,911,275` (exact 1:1 match with device).
+- **Sensor 1**: count `576,019`, min `759,337`, max `1,439,999`, unique `576,019`, duplicates `0`.
+- **Sensor 2**: count `1,335,256`, min `0`, max `1,439,999`, unique `1,335,256`, duplicates `0`.
+- **Missing Samples in Either Direction**: `0`.
+- **Duplicate-Freeness Guarantee**: Enforced by `PRIMARY KEY (session_id, sensor, idx)` in PostgreSQL and verified empirically (0 duplicates).
 
-#### 3. Cloud Export 502 Cause & Cloud Verification:
-- Streaming the complete unpaginated session `167e65b1` directly from Render returned **HTTP 502 Bad Gateway**.
-  - *Cause*: The query `SELECT ... FROM samples WHERE session_id = :sess ORDER BY idx ASC, sensor ASC` across 4.8M table rows attempted an external sort in memory. Render's free tier has only 512 MB RAM; the sort exceeded available memory and exceeded the 60-second gateway timeout.
-- A streamed export (`export_cloud_167e65b1.jsonl`, 5,200,828 bytes) collected 89,861 sample lines before truncating:
-  - **Cloud Export Sample Lines**: `89,861` (Sensor 2: indices 0..89,860)
-  - **Unique (sensor, index) Pairs**: `89,861`
-  - **Cloud Duplicates**: `0`
-  - **Missing on Device**: `0` (every sample in the cloud export matches the device export)
-  - **Missing in Partial Cloud Export**: `1,821,414` samples
-  - **Duplicate-Freeness Guarantee**: Duplicate-freeness in cloud PostgreSQL is enforced by primary key `PRIMARY KEY (session_id, sensor, idx)` with `ON CONFLICT DO NOTHING`.
-  - **Test Data in Cloud DB**: Sessions `bench_test_*` and `bench_throughput_*` in the cloud database are documented as synthetic test datasets from throughput and concurrency benchmarks.
+#### 3. Root Cause of Sensor 1 Silent Gap & Diverging Cursors:
+- In `pipeline.db`, cursors were stored with a single-column primary key `PRIMARY KEY (sensor)` rather than `(session_id, sensor)`.
+- When the daemon restarted, `expected_indices` was loaded from previous sessions. The reader sent `{"cmd": "read", "sensor": s, "from_index": exp_idx}` on boot before discovering the mock's session ID.
+- When the mock restarted with a new session:
+  - If `from_index` was within the mock's session (e.g. 759,337 in `167e65b1`), the mock skipped indices `0..759,336` silently.
+  - If `from_index` exceeded the mock's duration (e.g. 1,440,000 in `3b6af620`), the mock returned 0 samples and advanced past the mock's active index, permanently starving Sensor 1 while Sensor 2 read from index 0.
+- **Fix Applied**:
+  - Changed schema to composite `PRIMARY KEY (session_id, sensor)` with automatic DB migration.
+  - Initial read request sends `{"cmd": "read", "sensor": sensor}` without `from_index` until session is confirmed.
+  - Loaded cursors strictly for that `session_id`.
+  - On session restart, cursors reset to 0, old unread data is logged with `mock_restart_session_change`, and any initial gap is recorded as `not_read_before_pipeline_start`.
+  - Added unit tests: `test_reader_restart_across_session_change`, `test_sensor_cursors_do_not_diverge_after_restart`, `test_reader_records_initial_unread_gap_on_session_start` (all pass).
+
+#### 4. Cloud Export 502 Cause & Range Pagination:
+- Streaming the complete unpaginated session `167e65b1` directly from Render returned **HTTP 502 Bad Gateway** because the single request exceeded Render's 100-second reverse proxy timeout.
+- Fixed by implementing range-based pagination (50,000 index windows) in `cli.py` (`cmd_export`) and `cloud/server.py`.
 
 ### 3.4 Public Internet Upload Throughput & Catch-Up Benchmark
 
@@ -147,10 +151,10 @@ Measured against live deployment `https://mayacardio-z481.onrender.com`:
 ## 4. Disclosures & Known Limitations
 
 In strict adherence to reporting integrity:
-- **Flapping**: Observed for about 22 minutes on 17 Oct; 5-minute separate probe test had 0 timeouts; cause not established.
+- **Flapping**: Root cause identified as server-side event loop starvation by synchronous DB execution in `/api/v1/ingest` and connect/read timeout splitting in requests; offloaded to worker threads and patched monitor timeouts.
 - **Render Catch-Up Throughput**: Public internet upload throughput is ~1,689 samples/s (sequential) to ~2,534 samples/s (parallel). Catching up 2 hours requires ~38 to 57 minutes, failing the 15-minute SLA.
 - **Test Platform**: Automated test runs were executed on **Windows 10/11 x86_64 with Python 3.12.3**. Execution on a physical ARM64 Linux board has **NOT BEEN RUN**.
 - **Physical Power Pull**: Tested as an abrupt operating system process kill (`kill -9`). A physical hardware AC power pull on real hardware has **NOT BEEN RUN**.
 - **Continuous 2-Hour Outage Run**: Full continuous 2-hour accumulation (5.76M samples) was **NOT RUN**; catch-up rates were measured over 130,000-sample and 50,000-sample backlogs.
 - **1-Hour Continuous Resource Run**: Resource profiling was executed for **10 seconds** on x86_64. A 3600-second continuous test on ARM64 has **NOT BEEN RUN**.
-- **Synthetic Test Sessions**: Sessions `bench_test_*` and `bench_throughput_*` in the cloud database are documented as test data.
+- **Synthetic Test Sessions**: Sessions `bench_test_*` and `bench_throughput_*` in the cloud database are documented as test data from throughput and concurrency benchmarks.

@@ -1,4 +1,4 @@
-"""Database schema definitions for the MayaCardio pipeline."""
+"""Database schema definitions for the bedside biosignal pipeline."""
 
 SCHEMA_SQL = """
 PRAGMA journal_mode = WAL;
@@ -27,13 +27,14 @@ CREATE TABLE IF NOT EXISTS losses (
     detected_at REAL NOT NULL
 );
 
--- Cursors table: tracks reader and uploader state per sensor
+-- Cursors table: tracks reader and uploader state strictly per (session_id, sensor)
 CREATE TABLE IF NOT EXISTS cursors (
-    sensor INTEGER PRIMARY KEY,
     session_id TEXT NOT NULL,
+    sensor INTEGER NOT NULL,
     last_read_idx INTEGER NOT NULL DEFAULT -1,
     last_acked_idx INTEGER NOT NULL DEFAULT -1,
-    updated_at REAL NOT NULL
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (session_id, sensor)
 );
 
 -- Results table: computed window metrics for offline (device) and online (cloud)
@@ -61,11 +62,11 @@ CREATE TABLE IF NOT EXISTS results (
     max_s2c2 REAL,
     magnitude REAL,
     heart_rate REAL,
-    processed_at REAL,
+    processed_at REAL NOT NULL,
     PRIMARY KEY (session_id, "window", mode)
 );
 
--- System state table: persistent mode state (online/offline)
+-- System state table: stores operational mode ('online' or 'offline')
 CREATE TABLE IF NOT EXISTS system_state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
@@ -73,7 +74,8 @@ CREATE TABLE IF NOT EXISTS system_state (
 );
 
 -- Indexes for efficient queries
-CREATE INDEX IF NOT EXISTS idx_samples_export ON samples (session_id, sensor, idx);
-CREATE INDEX IF NOT EXISTS idx_losses_export ON losses (session_id, sensor, from_idx);
-CREATE INDEX IF NOT EXISTS idx_results_lookup ON results (session_id, "window", mode);
+CREATE INDEX IF NOT EXISTS idx_samples_export ON samples (session_id, idx ASC, sensor ASC);
+CREATE INDEX IF NOT EXISTS idx_samples_uploader ON samples (session_id, sensor, idx ASC);
+CREATE INDEX IF NOT EXISTS idx_losses_query ON losses (session_id, sensor, from_idx ASC);
+CREATE INDEX IF NOT EXISTS idx_results_query ON results (session_id, "window" ASC, mode ASC);
 """

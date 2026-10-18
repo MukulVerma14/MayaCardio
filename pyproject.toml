@@ -3,10 +3,10 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mayacardio-pipeline"
+name = "bedside-biosignal-pipeline"
 version = "0.1.0"
-description = "Bedside Biosignal Data Pipeline - Never Lose a Heartbeat"
-authors = [{ name = "MayaCardio Engineering Candidate" }]
+description = "Bedside Biosignal Data Pipeline - Resilient Edge-to-Cloud Telemetry"
+authors = [{ name = "<MY_GITHUB_USERNAME>" }]
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

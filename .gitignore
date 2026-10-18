@@ -36,7 +36,11 @@ env/
 *.swp
 *.swo
 
-# Database files (except explicit fixtures if any)
+# Environment variables & secrets
+.env
+.env.*
+
+# Database files
 *.db
 *.db-wal
 *.db-shm
@@ -44,13 +48,15 @@ env/
 *.sqlite3
 *.emergency_reserve
 
-# Test and coverage artifacts
+# Test, data, and export artifacts
 .pytest_cache/
 .coverage
 htmlcov/
 *.log
 *.jsonl
+export_*.jsonl
 test_run_*/
+tools/analyze_*.py
 
 # Operating system files
 .DS_Store

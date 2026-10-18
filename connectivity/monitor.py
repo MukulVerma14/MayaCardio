@@ -45,7 +45,17 @@ class ConnectivityMonitor:
         self.current_mode: str = self.db.get_mode()
         self.consecutive_failures: int = 0
         self.consecutive_successes: int = 0
+        self.last_successful_traffic_time: float = 0.0
         self.lock = threading.Lock()
+
+    def notify_successful_traffic(self) -> None:
+        """Notify monitor that live cloud traffic (e.g. batch ingest) succeeded."""
+        with self.lock:
+            self.last_successful_traffic_time = time.monotonic()
+            self.consecutive_failures = 0
+            self.consecutive_successes += 1
+            if self.current_mode == "offline" and self.consecutive_successes >= 2:
+                self._transition_to("online")
 
     def start(self) -> None:
         self.running = True
@@ -84,7 +94,8 @@ class ConnectivityMonitor:
             status_desc = "err"
 
             try:
-                resp = session.post(heartbeat_url, timeout=self.probe_timeout_sec)
+                # Explicit (connect_timeout, read_timeout): connect within 1.0s, read within 1.5s
+                resp = session.post(heartbeat_url, timeout=(1.0, self.probe_timeout_sec))
                 success = (resp.status_code == 200)
                 status_desc = f"HTTP {resp.status_code}" if resp.status_code != 200 else "HTTP 200"
             except requests.exceptions.Timeout:
@@ -97,7 +108,10 @@ class ConnectivityMonitor:
             rtt = time.monotonic() - t0
 
             with self.lock:
-                if success:
+                # If an ingest upload succeeded within the last 4.0s, the link is confirmed active;
+                # a simultaneous probe timeout is due to server worker queuing, not network loss.
+                link_recently_active = (time.monotonic() - self.last_successful_traffic_time) < 4.0
+                if success or link_recently_active:
                     self.consecutive_successes += 1
                     self.consecutive_failures = 0
                     logger.debug(

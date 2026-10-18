@@ -44,22 +44,9 @@ class ReaderClient:
 
         # Per-sensor state
         self.current_session_id: Optional[str] = None
+        self.session_identified: bool = False
         self.expected_indices: Dict[int, int] = {1: 0, 2: 0}
         self.consecutive_crc_failures: Dict[int, int] = {1: 0, 2: 0}
-
-        # Initialize cursors from database if recovering from previous run
-        self._init_cursors_from_db()
-
-    def _init_cursors_from_db(self) -> None:
-        """Resume expected read indices from stored database cursors."""
-        for sensor in (1, 2):
-            cursor = self.db.get_cursor(sensor)
-            if cursor is not None:
-                stored_sess, last_read_idx, _ = cursor
-                if self.current_session_id is None:
-                    self.current_session_id = stored_sess
-                self.expected_indices[sensor] = max(0, last_read_idx + 1)
-                logger.info(f"Resuming sensor {sensor} from session {stored_sess} at index {self.expected_indices[sensor]}")
 
     def start(self) -> None:
         self.running = True
@@ -111,11 +98,9 @@ class ReaderClient:
 
     def _poll_sensor(self, sensor: int, sock: socket.socket, sock_file: Any) -> None:
         """Send read request for a sensor, receive reply, verify CRC, and persist."""
-        exp_idx = self.expected_indices[sensor]
-
-        # Formulate request
-        if exp_idx > 0:
-            req = {"cmd": "read", "sensor": sensor, "from_index": exp_idx}
+        # Only send from_index if session is confirmed and we have a valid index
+        if self.session_identified and self.expected_indices[sensor] > 0:
+            req = {"cmd": "read", "sensor": sensor, "from_index": self.expected_indices[sensor]}
         else:
             req = {"cmd": "read", "sensor": sensor}
 
@@ -139,10 +124,9 @@ class ReaderClient:
         if not crc_valid:
             self.consecutive_crc_failures[sensor] += 1
             logger.warning(
-                f"Corrupt CRC received for sensor {sensor} at expected index {exp_idx} "
+                f"Corrupt CRC received for sensor {sensor} at expected index {self.expected_indices[sensor]} "
                 f"(consecutive failures: {self.consecutive_crc_failures[sensor]})"
             )
-            # Re-read next cycle with from_index
             return
 
         self.consecutive_crc_failures[sensor] = 0
@@ -155,8 +139,21 @@ class ReaderClient:
         is_session_end = bool(reply_dict.get("session_end", False))
         data_rows = reply_dict.get("data", [])
 
-        # Check for mock restart / session change
-        if self.current_session_id is not None and session_id != self.current_session_id:
+        # Session transition or initial identification
+        if not self.session_identified or self.current_session_id is None:
+            # First reply since startup: identify session and load per-(session, sensor) cursors
+            self.session_identified = True
+            self.current_session_id = session_id
+            for s in (1, 2):
+                cursor = self.db.get_cursor(s, session_id=session_id)
+                self.expected_indices[s] = max(0, cursor[1] + 1) if cursor is not None else 0
+            logger.info(
+                f"Identified mock session {session_id}. Initialized cursors: "
+                f"sensor 1={self.expected_indices[1]}, sensor 2={self.expected_indices[2]}"
+            )
+
+        elif session_id != self.current_session_id:
+            # Mock restarted mid-execution
             logger.warning(
                 f"Mock restarted! Session changed from {self.current_session_id} to {session_id}. "
                 f"Recording unread old data loss with to_index=null."
@@ -170,13 +167,10 @@ class ReaderClient:
                     reason="mock_restart_session_change",
                 )
                 self.expected_indices[s] = 0
+            self.current_session_id = session_id
+            logger.info(f"Reset cursors to 0 for new session {session_id}")
 
-        # Reset expected index if this sensor has not seen this session before
-        if self.current_session_id is None or self.current_session_id != session_id:
-            self.expected_indices[sensor] = 0
-            exp_idx = 0
-
-        self.current_session_id = session_id
+        exp_idx = self.expected_indices[sensor]
 
         # Prepare loss records
         loss_records: List[LossRecord] = []
@@ -215,14 +209,15 @@ class ReaderClient:
                     )
                 )
 
-        # Convert data rows into Sample instances
+        # Convert data rows into Sample instances, filtering out any samples already persisted
         samples: List[Sample] = []
         for offset, vals in enumerate(data_rows):
             sample_idx = first_index + offset
-            samples.append(Sample(sensor=sensor, idx=sample_idx, values=vals))
+            if sample_idx >= exp_idx:
+                samples.append(Sample(sensor=sensor, idx=sample_idx, values=vals))
 
         # Atomic commit to local SQLite
-        next_read_idx = first_index + count
+        next_read_idx = max(exp_idx, first_index + count)
         self.db.save_reply_batch(
             session_id=session_id,
             sensor=sensor,
@@ -232,4 +227,4 @@ class ReaderClient:
         )
 
         # Advance local expected index
-        self.expected_indices[sensor] = max(self.expected_indices[sensor], next_read_idx)
+        self.expected_indices[sensor] = next_read_idx

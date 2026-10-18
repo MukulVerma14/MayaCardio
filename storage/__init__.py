@@ -1,4 +1,4 @@
-"""Storage engine package for MayaCardio pipeline."""
+"""Storage engine package for bedside biosignal pipeline."""
 
 from storage.database import DeviceDatabase
 from storage.schema import SCHEMA_SQL

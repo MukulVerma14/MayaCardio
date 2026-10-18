@@ -1,4 +1,4 @@
-"""FastAPI Cloud Service for MayaCardio pipeline."""
+"""FastAPI Cloud Service for bedside biosignal pipeline."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from cloud.storage import CloudStorage
 from core.types import LossRecord, Sample
 
-app = FastAPI(title="MayaCardio Cloud Ingestion & Processing Service")
+app = FastAPI(title="Bedside Biosignal Cloud Ingestion & Processing Service")
 
 # Neon / Supabase PostgreSQL database URL or SQLite default
 DB_URL = os.environ.get("CLOUD_DATABASE_URL", "sqlite:///cloud_store.db")
@@ -24,7 +24,7 @@ cloud_storage = CloudStorage(db_url=DB_URL)
 
 @app.get("/")
 def root() -> Dict[str, str]:
-    return {"service": "mayacardio-cloud", "status": "running"}
+    return {"service": "bedside-biosignal-cloud", "status": "running"}
 
 
 @app.post("/api/v1/heartbeat")
@@ -87,12 +87,15 @@ async def ingest_batch(request: Request) -> Dict[str, Any]:
     # Offline results
     offline_results = payload.get("offline_results", [])
 
-    acked_cursors = cloud_storage.ingest_batch(
-        session_id=session_id,
-        samples=samples,
-        losses=losses,
-        offline_results=offline_results,
-        server_timestamp=server_time,
+    import anyio.to_thread
+
+    acked_cursors = await anyio.to_thread.run_sync(
+        cloud_storage.ingest_batch,
+        session_id,
+        samples,
+        losses,
+        offline_results,
+        server_time,
     )
 
     return {
@@ -132,6 +135,22 @@ def export_samples(
             from_index=from_index,
             to_index=to_index,
             limit=limit,
+        ):
+            yield line.encode("utf-8")
+
+    return StreamingResponse(byte_stream(), media_type="application/x-ndjson")
+
+
+@app.get("/api/v1/export/losses")
+def export_losses(
+    session_id: str,
+    sensor: Optional[int] = None,
+) -> StreamingResponse:
+    """Stream exported loss records for session_id in JSON lines format."""
+    def byte_stream():
+        for line in cloud_storage.export_losses_stream(
+            session_id=session_id,
+            sensor=sensor,
         ):
             yield line.encode("utf-8")
 

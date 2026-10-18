@@ -540,6 +540,30 @@ class CloudStorage:
                     obj = {"sensor": r[0], "from_index": r[1], "to_index": r[2], "reason": r[3]}
                     yield json.dumps(obj) + "\n"
 
+    def export_losses_stream(
+        self,
+        session_id: str,
+        sensor: Optional[int] = None,
+    ) -> Generator[str, None, None]:
+        with self.engine.connect() as conn:
+            loss_where = ["session_id = :sess"]
+            loss_params: Dict[str, Any] = {"sess": session_id}
+            if sensor is not None:
+                loss_where.append("sensor = :sensor")
+                loss_params["sensor"] = sensor
+            cur_l = conn.execute(
+                text(f"""
+                    SELECT sensor, from_idx, to_idx, reason
+                    FROM losses
+                    WHERE {" AND ".join(loss_where)}
+                    ORDER BY from_idx ASC, sensor ASC
+                """),
+                loss_params,
+            )
+            for r in cur_l:
+                obj = {"sensor": r[0], "from_index": r[1], "to_index": r[2], "reason": r[3]}
+                yield json.dumps(obj) + "\n"
+
     def export_results_stream(self, session_id: str) -> Generator[str, None, None]:
         with self.engine.connect() as conn:
             cur = conn.execute(

@@ -1,1 +1,1 @@
-"""Developer simulation and testing tools for MayaCardio pipeline."""
+"""Developer simulation and testing tools for bedside biosignal pipeline."""

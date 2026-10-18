@@ -1,0 +1,23 @@
+[Unit]
+Description=Bedside Biosignal Data Pipeline Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/bedside-biosignal-pipeline
+ExecStart=/home/pi/bedside-biosignal-pipeline/venv/bin/python pipeline run --db /home/pi/bedside-biosignal-pipeline/data/pipeline.db --cloud-url https://mayacardio-z481.onrender.com --mock-host 127.0.0.1 --mock-port 7100
+Restart=always
+RestartSec=2s
+
+# Resource limits (ARM64 / 2GB / 4 Cores target)
+MemoryMax=1500M
+MemoryHigh=1200M
+CPUQuota=300%
+
+# Sandboxing and security
+ProtectSystem=full
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

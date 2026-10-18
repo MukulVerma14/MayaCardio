@@ -1,4 +1,4 @@
-"""Durable SQLite storage engine for the MayaCardio bedside device."""
+"""Durable SQLite storage engine for the bedside biosignal device."""
 
 from __future__ import annotations
 
@@ -43,8 +43,43 @@ class DeviceDatabase:
         conn = self._get_connection()
         try:
             conn.executescript(SCHEMA_SQL)
+            self._migrate_cursors_table(conn)
         finally:
             conn.close()
+
+    def _migrate_cursors_table(self, conn: sqlite3.Connection) -> None:
+        """Migrate cursors table to composite PRIMARY KEY (session_id, sensor) if needed."""
+        try:
+            table_info = conn.execute("PRAGMA table_info(cursors)").fetchall()
+            if not table_info:
+                return
+            pk_cols = [r["name"] for r in table_info if r["pk"] > 0]
+            if set(pk_cols) != {"session_id", "sensor"}:
+                logger.info("Migrating cursors table to composite PRIMARY KEY (session_id, sensor)...")
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS cursors_v2 (
+                        session_id TEXT NOT NULL,
+                        sensor INTEGER NOT NULL,
+                        last_read_idx INTEGER NOT NULL DEFAULT -1,
+                        last_acked_idx INTEGER NOT NULL DEFAULT -1,
+                        updated_at REAL NOT NULL,
+                        PRIMARY KEY (session_id, sensor)
+                    )
+                """)
+                conn.execute("""
+                    INSERT OR IGNORE INTO cursors_v2 (session_id, sensor, last_read_idx, last_acked_idx, updated_at)
+                    SELECT session_id, sensor, last_read_idx, last_acked_idx, updated_at FROM cursors
+                """)
+                conn.execute("DROP TABLE cursors")
+                conn.execute("ALTER TABLE cursors_v2 RENAME TO cursors")
+                conn.execute("COMMIT")
+        except Exception as e:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            logger.warning(f"Could not migrate cursors table: {e}")
 
     def _ensure_emergency_reserve(self) -> None:
         """Create a pre-reserved space file so emergency loss records can be saved on ENOSPC."""
@@ -125,19 +160,17 @@ class DeviceDatabase:
                     (session_id, sensor, l.from_index, l.to_index, l.reason, det_at),
                 )
 
-            # Update reader cursor
+            # Update reader cursor strictly per (session_id, sensor)
             cursor_idx = next_read_idx - 1 if next_read_idx > 0 else 0
             conn.execute(
                 """
-                INSERT INTO cursors (sensor, session_id, last_read_idx, last_acked_idx, updated_at)
+                INSERT INTO cursors (session_id, sensor, last_read_idx, last_acked_idx, updated_at)
                 VALUES (?, ?, ?, -1, ?)
-                ON CONFLICT(sensor) DO UPDATE SET
-                    last_read_idx = CASE WHEN cursors.session_id = excluded.session_id THEN MAX(cursors.last_read_idx, excluded.last_read_idx) ELSE excluded.last_read_idx END,
-                    last_acked_idx = CASE WHEN cursors.session_id = excluded.session_id THEN cursors.last_acked_idx ELSE -1 END,
-                    session_id = excluded.session_id,
+                ON CONFLICT(session_id, sensor) DO UPDATE SET
+                    last_read_idx = MAX(cursors.last_read_idx, excluded.last_read_idx),
                     updated_at = excluded.updated_at
                 """,
-                (sensor, session_id, cursor_idx, now),
+                (session_id, sensor, cursor_idx, now),
             )
 
             conn.execute("COMMIT")
@@ -279,14 +312,24 @@ class DeviceDatabase:
         finally:
             conn.close()
 
-    def get_cursor(self, sensor: int) -> Optional[Tuple[str, int, int]]:
-        """Return (session_id, last_read_idx, last_acked_idx) for a sensor."""
+    def get_cursor(self, sensor: int, session_id: Optional[str] = None) -> Optional[Tuple[str, int, int]]:
+        """Return (session_id, last_read_idx, last_acked_idx) for a sensor.
+
+        If session_id is provided, returns the cursor for that specific session.
+        If session_id is None, returns the cursor for the latest updated session.
+        """
         conn = self._get_connection()
         try:
-            row = conn.execute(
-                "SELECT session_id, last_read_idx, last_acked_idx FROM cursors WHERE sensor=? ",
-                (sensor,),
-            ).fetchone()
+            if session_id is not None:
+                row = conn.execute(
+                    "SELECT session_id, last_read_idx, last_acked_idx FROM cursors WHERE session_id=? AND sensor=?",
+                    (session_id, sensor),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT session_id, last_read_idx, last_acked_idx FROM cursors WHERE sensor=? ORDER BY updated_at DESC LIMIT 1",
+                    (sensor,),
+                ).fetchone()
             if row:
                 return row["session_id"], row["last_read_idx"], row["last_acked_idx"]
             return None
@@ -294,23 +337,34 @@ class DeviceDatabase:
             conn.close()
 
     def advance_acked_cursor(self, sensor: int, session_id: str, acked_idx: int) -> None:
-        """Update last_acked_idx for a sensor."""
+        """Update last_acked_idx for a sensor strictly per (session_id, sensor)."""
         conn = self._get_connection()
         now = time.time()
         try:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 """
-                UPDATE cursors
-                SET last_acked_idx = MAX(last_acked_idx, ?), updated_at = ?
-                WHERE sensor = ? AND session_id = ?
+                INSERT INTO cursors (session_id, sensor, last_read_idx, last_acked_idx, updated_at)
+                VALUES (?, ?, -1, ?, ?)
+                ON CONFLICT(session_id, sensor) DO UPDATE SET
+                    last_acked_idx = MAX(cursors.last_acked_idx, excluded.last_acked_idx),
+                    updated_at = excluded.updated_at
                 """,
-                (acked_idx, now, sensor, session_id),
+                (session_id, sensor, acked_idx, now),
             )
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
             raise
+        finally:
+            conn.close()
+
+    def get_unacked_sessions(self) -> List[str]:
+        """Return list of session_ids ordered by update time."""
+        conn = self._get_connection()
+        try:
+            rows = conn.execute("SELECT DISTINCT session_id FROM cursors ORDER BY updated_at ASC").fetchall()
+            return [r["session_id"] for r in rows]
         finally:
             conn.close()
 
@@ -498,7 +552,7 @@ class DeviceDatabase:
             current_mode = mode_row["value"] if mode_row else "online"
 
             cursor_rows = cur.execute(
-                "SELECT sensor, session_id, last_read_idx, last_acked_idx FROM cursors"
+                "SELECT sensor, session_id, last_read_idx, last_acked_idx FROM cursors ORDER BY updated_at DESC"
             ).fetchall()
 
             # Identify target session: explicit argument, active cursor session, or latest sample session

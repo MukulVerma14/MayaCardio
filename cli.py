@@ -1,4 +1,4 @@
-"""CLI interface for the MayaCardio pipeline daemon and tools."""
+"""CLI interface for the bedside biosignal pipeline daemon and tools."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
     logger = logging.getLogger("pipeline.daemon")
-    logger.info("Starting MayaCardio Bedside Data Pipeline Daemon...")
+    logger.info("Starting Bedside Biosignal Data Pipeline Daemon...")
 
     db = DeviceDatabase(args.db)
     conn_monitor = ConnectivityMonitor(
@@ -108,9 +108,51 @@ def cmd_export(args: argparse.Namespace) -> None:
 
     elif source == "cloud":
         cloud_url = (args.cloud_url or os.environ.get("CLOUD_URL", "http://127.0.0.1:8000")).rstrip("/")
+        # Range-based pagination to prevent HTTP 502 Bad Gateway timeouts on large sessions
+        try:
+            v_resp = requests.get(f"{cloud_url}/api/v1/session_verify?session_id={session_id}", timeout=30.0)
+            if v_resp.status_code == 200:
+                v_data = v_resp.json()
+                sensors = v_data.get("sensors", {})
+                if sensors:
+                    min_idx = min(s["min_index"] for s in sensors.values() if s.get("min_index") is not None)
+                    max_idx = max(s["max_index"] for s in sensors.values() if s.get("max_index") is not None)
+
+                    page_step = 50000
+                    for start in range(min_idx, max_idx + 1, page_step):
+                        end = min(start + page_step - 1, max_idx)
+                        url = f"{cloud_url}/api/v1/export/samples?session_id={session_id}&from_index={start}&to_index={end}"
+                        with requests.get(url, stream=True, timeout=60.0) as resp:
+                            if resp.status_code == 200:
+                                for chunk in resp.iter_content(chunk_size=65536):
+                                    if chunk:
+                                        sys.stdout.buffer.write(chunk)
+                                sys.stdout.buffer.flush()
+                            else:
+                                sys.stderr.write(f"Warning: HTTP {resp.status_code} fetching range [{start}, {end}]\n")
+
+                    # Output losses
+                    seen_losses = set()
+                    for l in v_data.get("losses", []):
+                        key = (l.get("sensor"), l.get("from_index"), l.get("to_index"), l.get("reason"))
+                        if key not in seen_losses:
+                            seen_losses.add(key)
+                            obj = {
+                                "sensor": l["sensor"],
+                                "from_index": l["from_index"],
+                                "to_index": l["to_index"],
+                                "reason": l["reason"],
+                            }
+                            sys.stdout.write(json.dumps(obj) + "\n")
+                    sys.stdout.flush()
+                    return
+        except Exception as e:
+            sys.stderr.write(f"Paginated export fallback due to: {e}\n")
+
+        # Fallback to single streaming request
         url = f"{cloud_url}/api/v1/export/samples?session_id={session_id}"
         try:
-            with requests.get(url, stream=True, timeout=30.0) as resp:
+            with requests.get(url, stream=True, timeout=60.0) as resp:
                 if resp.status_code != 200:
                     sys.stderr.write(f"Error fetching from cloud: HTTP {resp.status_code}\n")
                     sys.exit(1)
@@ -140,7 +182,7 @@ def build_parser() -> argparse.ArgumentParser:
     parent_parser.add_argument("--db", default=DEFAULT_DB_PATH, help="Path to SQLite database file")
     parent_parser.add_argument("--cloud-url", default=DEFAULT_CLOUD_URL, help="Cloud service URL")
 
-    parser = argparse.ArgumentParser(prog="pipeline", description="MayaCardio Bedside Data Pipeline", parents=[parent_parser])
+    parser = argparse.ArgumentParser(prog="pipeline", description="Bedside Biosignal Data Pipeline", parents=[parent_parser])
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # pipeline run

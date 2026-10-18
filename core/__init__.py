@@ -1,4 +1,4 @@
-"""MayaCardio Core Processing Module.
+"""Core Processing Module.
 
 Shared between embedded device (offline processing) and cloud pipeline (online processing).
 Guarantees byte-identical mathematical output.

@@ -1,6 +1,6 @@
-# Video Demonstration Script: Never Lose a Heartbeat (<= 5 Minutes)
+# Technical Demonstration Script: Bedside Biosignal Pipeline (<= 5 Minutes)
 
-This script provides an exact shot list and command sequence for recording the 5-minute technical demonstration video showing:
+This script provides an exact shot list and command sequence for recording or executing the 5-minute technical demonstration:
 1. Normal online streaming and latency against the deployed Render cloud service.
 2. Network cut, automatic mode switch, and backlog catch-up (local-simulated test).
 3. Process kill (`kill -9`) and clean resumption without duplicate samples.
@@ -12,7 +12,7 @@ This script provides an exact shot list and command sequence for recording the 5
 
 ### Action:
 1. Open three PowerShell windows side-by-side:
-   - **Terminal 1**: Biosignal mock simulator (or real mock binary)
+   - **Terminal 1**: Biosignal mock simulator (or hardware reader)
    - **Terminal 2**: Bedside pipeline daemon
    - **Terminal 3**: Operator status query
 
@@ -40,7 +40,7 @@ python pipeline status
 ## Shot 2: Network Cut, Mode Switch & Catch-Up (1:00 – 2:30)
 
 ### Narration:
-*"Simulating bedside network loss in a hospital setting. The device must transition to OFFLINE within 10 seconds and compute metrics locally with honest loss accounting if buffers overflow."*
+*"Simulating bedside network loss in a telemetry setting. The device transitions to OFFLINE within 10 seconds and computes metrics locally with honest loss accounting if buffers overflow."*
 
 ### Action:
 1. Run the local-simulated network outage test or block cloud connectivity:
@@ -72,7 +72,7 @@ python pipeline results --session <SESSION_ID>
 ## Shot 3: Daemon Kill (`kill -9`) & Resumption (2:30 – 3:45)
 
 ### Narration:
-*"Simulating process crash or watchdog SIGKILL. We will send a hard kill to the daemon process."*
+*"Simulating process crash or watchdog SIGKILL. We send a hard kill to the daemon process."*
 
 ### Action:
 1. In Terminal 3, kill the pipeline process abruptly:

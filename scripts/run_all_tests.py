@@ -1,4 +1,4 @@
-"""Master Test Suite Runner for MayaCardio Hiring Case Assessment.
+"""Master Test Suite Runner for Bedside Biosignal Pipeline.
 
 Executes all failure tests and prints a comprehensive pass/fail summary matrix.
 """
@@ -24,7 +24,7 @@ SCRIPTS = [
 
 def main() -> None:
     print("=================================================================")
-    print("       MAYACARDIO PIPELINE - COMPREHENSIVE TEST SUITE           ")
+    print("       BEDSIDE BIOSIGNAL PIPELINE - COMPREHENSIVE TEST SUITE           ")
     print("=================================================================\n")
 
     scripts_dir = Path(__file__).resolve().parent

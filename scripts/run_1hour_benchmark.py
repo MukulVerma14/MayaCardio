@@ -174,7 +174,7 @@ def run_benchmark(duration_sec: int, mock_mode: str = "signal") -> Dict[str, Any
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Resource Profiler for MayaCardio Pipeline")
+    parser = argparse.ArgumentParser(description="Resource Profiler for Bedside Biosignal Pipeline")
     parser.add_argument("--duration", type=int, default=30, help="Run duration in seconds (default: 30 for quick profile, 3600 for 1h)")
     parser.add_argument("--mode", choices=["signal", "ramp"], default="signal", help="Signal mode")
     args = parser.parse_args()

@@ -1,6 +1,6 @@
-# System Architecture & Design Specification: MayaCardio Pipeline
+# System Architecture & Design Specification: Bedside Biosignal Pipeline
 
-This document details the architectural principles, subsystem designs, mathematical invariants, resilience boundaries, and deployment specifications for the MayaCardio bedside biosignal pipeline.
+This document details the architectural principles, subsystem designs, mathematical invariants, resilience boundaries, and deployment specifications for the bedside biosignal pipeline.
 
 ---
 
@@ -39,8 +39,8 @@ flowchart TD
         end
     end
 
-    subgraph RemoteCloud ["Free Cloud Backend (Render.com + Neon PostgreSQL, tested deployment)"]
-        IngestAPI["FastAPI Ingestion Endpoint\n(/api/v1/ingest)"]
+    subgraph RemoteCloud ["Cloud Backend (Render.com + Neon PostgreSQL, tested deployment)"]
+        IngestAPI["FastAPI Ingestion Endpoint\n(/api/v1/ingest)\nWorker-thread DB offload"]
         CloudProc["Cloud Window Processor\n(Shared Core Logic)"]
         CloudDB[("Neon Serverless PostgreSQL\nPRIMARY KEY (session_id, sensor, idx)\nON CONFLICT DO NOTHING")]
         
@@ -62,10 +62,11 @@ flowchart TD
 
 ### 2.1 Biosignal Reader & Protocol Parser ([`reader/`](reader/))
 - **Framing & Protocol**: Handles newline-delimited ASCII lines (`"s1,idx,v1,v2,v3,crc"` / `"s2,idx,v1,v2,crc"`).
-- **Integrity Verification**: Verifies 32-bit CRC against IEEE 802.3 standard on every incoming sample frame.
+- **Integrity Verification**: Verifies 32-bit CRC against IEEE 802.3 standard on every incoming sample frame using raw byte slices to avoid serialization discrepancies.
 - **Session State & Gap Handling**:
-  - The reader detects session ID transitions in the mock response stream.
-  - When a new session is detected, all sensor cursors are reset immediately to 0.
+  - Cursors are strictly keyed per composite `(session_id, sensor)`.
+  - On startup or reconnect, the reader probes the mock without `from_index` until the active `session_id` is identified. Stale cursors from previous sessions are never sent to a newly started mock.
+  - When a session ID transition is detected, cursors reset immediately to 0. Unread data from the previous session is finalized as `LossRecord(to_index=null, reason="mock_restart_session_change")`.
   - If a sensor's initial read in a session starts with `first_index > 0`, the reader records `LossRecord(sensor, 0, first_index - 1, reason="not_read_before_pipeline_start")`.
   - Buffer overflow losses detected by the mock (`loss,from_idx,to_idx,reason`) are committed to SQLite.
 - **Zero Cloud Coupling**: The reader never makes network calls to the cloud and cannot be blocked by cloud latency or network disconnects.
@@ -83,21 +84,24 @@ flowchart TD
 - **Deterministic Rounding**: All decimal outputs use `Decimal` with `ROUND_HALF_UP` quantized to `Decimal('0.1')`.
 
 ### 2.4 Connectivity Monitor & Mode Switching ([`connectivity/`](connectivity/))
-- Probes `/api/v1/heartbeat` every 2.0s using monotonic clock intervals with a 1.5s timeout.
-- **Hysteresis**: 3 consecutive failed probes switch mode to `offline` (measured: **6.06s** in local-simulated test, theoretical limit $\le 6.0\text{s} + \text{timeout}$); 2 consecutive successes switch mode to `online` (measured: **4.55s** in local-simulated test, theoretical limit $\le 4.0\text{s}$). Both are well within the $\le 10\text{s}$ requirement. Mode state is persisted to SQLite.
+- Probes `/api/v1/heartbeat` every 2.0s using monotonic clock intervals.
+- **Explicit Timeout Definition**: Uses tuple `timeout=(1.0, 1.5)` (1.0s connect, 1.5s read) to prevent Python requests from accumulating up to 3.0s total elapsed time before timing out.
+- **Traffic Awareness**: Monitors `last_successful_traffic_time`. If active uploader traffic succeeded within the preceding 4.0s, isolated probe timeouts are suppressed to prevent false flapping during heavy backlog uploads.
+- **Hysteresis**: 3 consecutive failed probes switch mode to `offline` (measured: **6.06s** in local-simulated test); 2 consecutive successes switch mode to `online` (measured: **4.55s** in local-simulated test). Both are well within the $\le 10\text{s}$ requirement. Mode state is persisted to SQLite.
 
 ### 2.5 Dual-Channel Uploader & Catch-Up ([`uploader/`](uploader/))
 - **Prioritization**: When online, live batches are transmitted every 0.5s to ensure results appear in the cloud within 5s (measured P95 latency: **~1.1s** on localhost).
-- **Throughput & Backlog Drain**: Backlog is uploaded in batches of up to 2,500 samples with Gzip compression.
+- **Throughput & Backlog Drain**: Backlog is uploaded in batches of up to 2,500 samples with Gzip compression and 50ms inter-batch pacing to avoid starving the remote event loop.
   - **Localhost**: Sustained throughput of **12,455.7 samples/s** `[MEASURED]`, allowing a 2-hour outage (5.76M samples) to drain in **~7.7 minutes** (requirement met on localhost).
   - **Deployed Render (Public Internet)**: Upload throughput measured at **1,688.6 samples/s** (sequential, 1 worker) to **2,533.7 samples/s** (parallel, 4 workers) `[MEASURED]`. Catching up a 2-hour backlog over the public internet requires projected **~37.9 to 56.9 minutes**, which does **NOT** meet the 15-minute requirement on this deployment.
 - **Ack-Based Advancing**: Device cursors advance only upon receiving explicit acknowledgement from the cloud ingestion endpoint.
 
-### 2.6 Free Cloud Tier Architecture (Render + Neon)
-- **Platform**: Render.com (Free Web Service) + Neon.tech (Free Serverless PostgreSQL). Both provide free tiers (per provider documentation, verify at signup).
+### 2.6 Cloud Tier Architecture (Render + Neon PostgreSQL)
+- **Platform**: Render.com (Free Web Service) + Neon.tech (Serverless PostgreSQL).
+- **Non-Blocking Ingestion**: In `cloud/server.py`, the synchronous ingestion transaction is offloaded to worker threads using `await anyio.to_thread.run_sync()`, keeping the main asyncio event loop responsive for `/api/v1/heartbeat` probes.
 - **Schema & SQL Portability**: Double-quoted identifier `"window"` ensures full compatibility with PostgreSQL reserved keywords while preserving SQLite compatibility.
 - **Duplicate-Freeness Guarantee**: Guaranteed by `PRIMARY KEY (session_id, sensor, idx)` with `ON CONFLICT (session_id, sensor, idx) DO NOTHING`.
-- **Cold-Start Mitigation & Keepalive (design intent, not tested)**: Render free web services spin down after 15 minutes of inactivity (cold start ~50s). In this architecture, the bedside device transmits a lightweight `/api/v1/heartbeat` probe every **2.0 seconds** while online. Continuous multi-hour keepalive effectiveness was not empirically measured.
+- **Paginated Export**: Supports range-based streaming (`from_index`, `to_index`) in 50,000 index chunks to prevent HTTP 502 Bad Gateway timeouts on multi-million sample sessions.
 
 ---
 
@@ -113,7 +117,7 @@ flowchart TD
 7. **Cloud Data Integrity**: PostgreSQL primary key `(session_id, sensor, idx)` guarantees zero duplicates in cloud storage `[MEASURED]`.
 
 ### NOT Guaranteed:
-1. **Data Discarded by the Mock Prior to Read**: If the pipeline is stopped longer than the mock's 10-second internal ring buffer (4,000 samples), data purged by the mock cannot be recovered; it is accurately recorded as `lost` with `buffer_overflow` or `gap_detected_unread`.
+1. **Data Discarded by the Mock Prior to Read**: If the pipeline is stopped longer than the mock's 10-second internal ring buffer (4,000 samples), data purged by the mock cannot be recovered; it is accurately recorded as lost with `buffer_overflow` or `not_read_before_pipeline_start`.
 2. **Conflicting Samples from External Sources**: If an external caller injects conflicting values for an already recorded `(session_id, sensor, idx)`, the conflicting sample is rejected and discarded to preserve data integrity `[MEASURED via test_fault_proxy.py]`.
 3. **15-Minute 2-Hour Catch-Up on Free Cloud Deployments**: While localhost achieves 12,455 samples/s (~7.7 min), the public internet connection to Render free tier achieves ~1,689 to 2,534 samples/s (~38 to 57 minutes), exceeding the 15-minute target.
 
@@ -122,7 +126,7 @@ flowchart TD
 ## 4. Power Cut Analysis & Data Loss Boundary
 
 - **Tested Power-Cut Simulation**: Hard process kill (`proc.kill()` with `taskkill /F` / `kill -9`) mid-write `[MEASURED]`. SQLite WAL with `synchronous=FULL` passed `PRAGMA integrity_check` with 0 duplicate samples and 0 database corruption.
-- **Physical AC Power Pull**: `[NOT RUN]` (requires pulling physical power cable on real Raspberry Pi hardware; instructions in [`HUMAN_TODO.md`](HUMAN_TODO.md)).
+- **Physical AC Power Pull**: `[NOT RUN]` (requires pulling physical power cable on real Raspberry Pi hardware).
 - **Theoretical Maximum Data Loss on Power Cut**:
   1. The pipeline reader polls each sensor every $250$ ms.
   2. Each batch of up to 100 samples (250 ms) is committed to disk via SQLite `PRAGMA synchronous = FULL` in an atomic transaction before the read cursor advances.
@@ -137,16 +141,16 @@ flowchart TD
 2. **Sensor 1 Channel Mapping in Ramp Mode**: Ramp mode specification `(3i + c) mod 8388608` is mapped using 0-indexed channels $c \in \{0, 1, 2\}$ corresponding to channels `s1c1`, `s1c2`, `s1c3`.
 3. **Sensor 2 Magnitude**: Defined as the mean of $\sqrt{ch1^2 + ch2^2}$ across all available Sensor 2 samples in the window. If Sensor 2 has 0 available samples, `magnitude` is `null`.
 4. **Heart Rate Window Lookahead**: Because sample $i$ requires sample $i+1$ to be evaluated as a peak, the final sample of window $w$ (index $400w+399$) requires sample $400(w+1)$ of Sensor 1 to be available or marked lost before window $w$ can be finalized.
-5. **Deterministic Rounding**: In accordance with the prompt guidance, Python's default bankers rounding (`round()`) is avoided; deterministic `ROUND_HALF_UP` via `decimal.Decimal` quantized to `Decimal('0.1')` is used across all metrics.
+5. **Deterministic Rounding**: Python's default bankers rounding (`round()`) is avoided; deterministic `ROUND_HALF_UP` via `decimal.Decimal` quantized to `Decimal('0.1')` is used across all metrics.
 6. **Benchmark Test Sessions**: Sessions `bench_test_*` and `bench_throughput_*` in the cloud database represent synthetic test datasets created during concurrency, throughput, and resilience benchmarks.
 
 ---
 
 ## 6. Known Limitations
 
-1. **Periodic Online/Offline Mode Flapping**: Observed for about 22 minutes on 17 Oct; 5-minute separate probe test had 0 timeouts; cause not established. Why 3 consecutive probe failures occurred about once per minute remains unexplained (hypotheses include Render free-tier container CPU starvation or reverse-proxy queue contention, but latency jitter was not confirmed as the cause).
-2. **Render Catch-Up Throughput Limitation**: Public internet upload throughput to free-tier Render is ~1,689 samples/s (sequential) to ~2,534 samples/s (parallel). Catching up a 2-hour backlog (5.76M samples) over this deployment requires ~38 to 57 minutes, failing the 15-minute SLA that localhost satisfies (~7.7 min).
-3. **Render Free-Tier Cold Starts**: Free instances on Render spin down after 15 minutes of inactivity; waking up an instance requires ~50 seconds, triggering temporary offline mode switching until the cloud service responds.
-4. **Untested on Physical ARM64 Hardware**: All tests and runs were performed on Windows 10/11 x86_64; physical execution on a Raspberry Pi ARM64 board, systemd auto-start, and physical power cable pulls remain `[NOT RUN]`.
-5. **Full 2-Hour Continuous Catch-Up**: Sustained throughput of 12,455.7 samples/s was empirically verified on a 130,000-sample backlog; full 2-hour accumulation (5.76M samples) was `[NOT RUN]`.
-6. **1-Hour Continuous Resource Run**: Resource profiling ran for 10 seconds on x86_64; a full 3600-second continuous benchmark on ARM64 was `[NOT RUN]`.
+1. **Render Catch-Up Throughput Limitation**: Public internet upload throughput to free-tier Render is ~1,689 samples/s (sequential) to ~2,534 samples/s (parallel). Catching up a 2-hour backlog (5.76M samples) over this deployment requires ~38 to 57 minutes, failing the 15-minute SLA that localhost satisfies (~7.7 min).
+2. **Render Free-Tier Cold Starts**: Free instances on Render spin down after 15 minutes of inactivity; waking up an instance requires ~50 seconds, triggering temporary offline mode switching until the cloud service responds.
+3. **Untested on Physical ARM64 Hardware**: All tests and runs were performed on Windows 10/11 x86_64; physical execution on a Raspberry Pi ARM64 board, systemd auto-start, and physical power cable pulls remain `[NOT RUN]`.
+4. **Full 2-Hour Continuous Catch-Up**: Sustained throughput of 12,455.7 samples/s was empirically verified on a 130,000-sample backlog; full 2-hour accumulation (5.76M samples) was `[NOT RUN]`.
+5. **1-Hour Continuous Resource Run**: Resource profiling ran for 10 seconds on x86_64; a full 3600-second continuous benchmark on ARM64 was `[NOT RUN]`.
+6. **Keepalive Effectiveness Unproven**: The 2.0s heartbeat probe is an architectural design intent to prevent spin-down during active monitoring; its long-term multi-hour effectiveness on Render free tier was not tested.

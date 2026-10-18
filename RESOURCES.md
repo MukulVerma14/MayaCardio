@@ -1,6 +1,6 @@
 # System Resource Utilization Profile & Audit
 
-This document details the measured and projected resource footprint (CPU, memory, storage I/O, network) of the MayaCardio bedside data pipeline.
+This document details the measured and projected resource footprint (CPU, memory, storage I/O, network) of the bedside biosignal data pipeline.
 
 ---
 
@@ -8,7 +8,7 @@ This document details the measured and projected resource footprint (CPU, memory
 
 In strict accordance with reporting integrity:
 - **Actual Measurement Host**: **Windows 10/11 x86_64 (AMD64), Python 3.12.3**
-- **Target Assessment Board**: **Raspberry Pi 4 / CM4 (ARM64, max 4 cores, max 2 GB RAM)**
+- **Target Edge Platform**: **Raspberry Pi 4 / CM4 (ARM64 target, max 4 cores, max 2 GB RAM)**
 - **Actual Benchmark Duration**: **10 seconds** (`scripts/run_1hour_benchmark.py --duration 10`)
 - **Full 1-Hour Run on Physical ARM64**: **NOT RUN** (`[NOT RUN / UNVERIFIED ON PHYSICAL ARM64]`)
 
@@ -26,7 +26,7 @@ The table below distinguishes empirical figures measured during the 10-second st
 | **Peak Memory (RSS)** | **31.85 MB** `[MEASURED]` | **NOT RUN** on ARM64 | $\le 2,048$ MB (2.0 GB) | **Within Budget on x86_64** |
 | **Disk Write Rate** | **~941 KB/s** `[MEASURED]` | **NOT RUN** on ARM64 | Sequential WAL append | **Within Budget on x86_64** |
 | **1-Hour Continuous Disk Write** | 9.19 MB in 10s `[MEASURED]` | **NOT RUN** on ARM64 | eMMC / high-endurance SD | `[NOT RUN]` |
-| **Catch-Up Throughput** | **12,455.7 samples/s** `[MEASURED]` | N/A (burst mode) | $\ge 6,500$ samples/s | **Exceeds Target (1.9x)** |
+| **Catch-Up Throughput** | **12,455.7 samples/s** `[MEASURED]` | N/A (burst mode) | $\ge 6,500$ samples/s | **Exceeds Target (1.9x on localhost)** |
 | **Result Latency (P95)** | **~1.1 seconds** `[MEASURED (localhost)]` | No Render internet benchmark | $\le 5.0$ seconds | **Within Budget on localhost** |
 
 ---
